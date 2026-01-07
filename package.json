@@ -9,7 +9,12 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@langchain/core": "^0.3.13",
+    "@langchain/google-genai": "^0.1.6",
+    "langchain": "^0.3.7",
+    "mammoth": "^1.8.0",
     "next": "16.1.1",
+    "pdf-parse": "^1.1.1",
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },

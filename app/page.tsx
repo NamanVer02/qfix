@@ -1,65 +1,354 @@
-import Image from "next/image";
+"use client";
+
+import { useEffect, useState } from "react";
+
+type UploadedResume = {
+  file: File;
+  url: string;
+};
 
 export default function Home() {
+  const [uploadedResume, setUploadedResume] = useState<UploadedResume | null>(
+    null,
+  );
+  const [jobDescription, setJobDescription] = useState("");
+  const [isTailoring, setIsTailoring] = useState(false);
+  const [tailoredResumeText, setTailoredResumeText] = useState<string | null>(
+    null,
+  );
+  const [tailoredDownloadUrl, setTailoredDownloadUrl] = useState<string | null>(
+    null,
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (uploadedResume?.url) {
+        URL.revokeObjectURL(uploadedResume.url);
+      }
+      if (tailoredDownloadUrl) {
+        URL.revokeObjectURL(tailoredDownloadUrl);
+      }
+    };
+  }, [uploadedResume, tailoredDownloadUrl]);
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const allowedTypes = [
+      "application/pdf",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/msword",
+    ];
+
+    if (!allowedTypes.includes(file.type)) {
+      alert("Please upload a PDF or DOCX resume.");
+      event.target.value = "";
+      return;
+    }
+
+    if (uploadedResume?.url) {
+      URL.revokeObjectURL(uploadedResume.url);
+    }
+
+    const url = URL.createObjectURL(file);
+    setUploadedResume({ file, url });
+    setTailoredResumeText(null);
+    if (tailoredDownloadUrl) {
+      URL.revokeObjectURL(tailoredDownloadUrl);
+      setTailoredDownloadUrl(null);
+    }
+  };
+
+  const handleTailorClick = async () => {
+    if (!uploadedResume || !jobDescription.trim()) {
+      return;
+    }
+
+    setIsTailoring(true);
+    setError(null);
+    setTailoredResumeText(null);
+    if (tailoredDownloadUrl) {
+      URL.revokeObjectURL(tailoredDownloadUrl);
+      setTailoredDownloadUrl(null);
+    }
+
+    try {
+      const formData = new FormData();
+      formData.append("resume", uploadedResume.file);
+      formData.append("jobDescription", jobDescription);
+
+      const response = await fetch("/api/tailor", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to tailor resume.");
+      }
+
+      const text = String(data.tailoredResumeText || "").trim();
+      if (!text) {
+        throw new Error("Received empty tailored resume from the server.");
+      }
+
+      setTailoredResumeText(text);
+
+      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      setTailoredDownloadUrl(url);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Something went wrong.";
+      setError(message);
+    } finally {
+      setIsTailoring(false);
+    }
+  };
+
+  const isPdf =
+    uploadedResume && uploadedResume.file.type === "application/pdf";
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900 text-slate-50">
+      <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-10 px-6 py-10 md:px-10 lg:flex-row lg:items-stretch lg:gap-16 lg:py-16">
+        {/* Left: Hero / Intro */}
+        <section className="flex flex-1 flex-col justify-between gap-10">
+          <div className="space-y-6">
+            <div className="inline-flex items-center gap-2 rounded-full border border-slate-700/80 bg-slate-900/60 px-3 py-1 text-xs font-medium text-slate-300 shadow-sm">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              Qfix Resume · Smart resume tailoring for every job
+            </div>
+            <div className="space-y-4">
+              <h1 className="text-balance text-4xl font-semibold tracking-tight text-slate-50 sm:text-5xl lg:text-6xl">
+                Tailor your resume
+                <span className="block bg-gradient-to-r from-emerald-300 via-cyan-300 to-sky-400 bg-clip-text text-transparent">
+                  to every job description.
+                </span>
+              </h1>
+              <p className="max-w-xl text-pretty text-base leading-relaxed text-slate-300 sm:text-lg">
+                Qfix Resume helps you instantly adapt your resume to match any
+                role. Upload your resume, paste the job description, and get a
+                targeted version ready to send.
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-2 text-sm text-slate-400">
+            <p>
+              Upload your resume, paste the job description, and let Qfix
+              Resume suggest a tailored version you can copy or download.
+            </p>
+          </div>
+        </section>
+
+        {/* Right: Upload & Job Description */}
+        <section className="flex flex-1 flex-col gap-6 rounded-2xl border border-slate-800 bg-slate-900/70 p-6 shadow-xl shadow-slate-950/60 backdrop-blur-lg md:p-7">
+          <div className="space-y-2">
+            <h2 className="text-lg font-semibold text-slate-50">
+              Get your resume ready in three steps
+            </h2>
+            <p className="text-sm text-slate-400">
+              1. Upload your resume · 2. Paste the job description · 3. Preview
+              &amp; download.
+            </p>
+          </div>
+
+          {/* Upload */}
+          <div className="space-y-3">
+            <label className="text-sm font-medium text-slate-200">
+              Upload your resume
+            </label>
+            <div className="flex flex-col gap-3 rounded-xl border border-dashed border-slate-700/90 bg-slate-900/60 p-4 text-sm text-slate-300">
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-full bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 shadow-md shadow-emerald-500/40 transition hover:bg-emerald-400 hover:shadow-emerald-400/40">
+                  <input
+                    type="file"
+                    accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    className="hidden"
+                    onChange={handleFileChange}
+                  />
+                  <span>Choose file</span>
+                </label>
+                <div className="text-xs text-slate-400">
+                  PDF or DOCX files are supported. Max ~10MB recommended.
+                </div>
+              </div>
+              <div className="text-xs text-slate-300">
+                {uploadedResume ? (
+                  <span>
+                    Selected:{" "}
+                    <span className="font-medium text-emerald-300">
+                      {uploadedResume.file.name}
+                    </span>{" "}
+                    ({Math.round(uploadedResume.file.size / 1024)} KB)
+                  </span>
+                ) : (
+                  <span>No file selected yet.</span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Job Description */}
+          <div className="space-y-2">
+            <label
+              htmlFor="job-description"
+              className="text-sm font-medium text-slate-200"
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+              Job description
+            </label>
+            <textarea
+              id="job-description"
+              value={jobDescription}
+              onChange={(e) => setJobDescription(e.target.value)}
+              placeholder="Paste the job description here. Qfix Resume will soon analyze this and highlight how to adapt your resume."
+              className="min-h-[150px] w-full resize-none rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none ring-0 transition placeholder:text-slate-500 focus:border-emerald-400/70 focus:ring-2 focus:ring-emerald-500/40"
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+            <p className="text-xs text-slate-400">
+              We don&apos;t store your resume or job description. Tailoring is
+              done via a secure AI API, and this demo keeps everything tied to
+              your current session.
+            </p>
+          </div>
+
+          {/* Actions */}
+          <div className="mt-2 flex flex-wrap items-center gap-3 border-t border-slate-800 pt-4">
+            <button
+              type="button"
+              disabled={!uploadedResume || !jobDescription.trim() || isTailoring}
+              onClick={handleTailorClick}
+              className="inline-flex items-center justify-center rounded-full bg-slate-50 px-4 py-2 text-sm font-semibold text-slate-950 shadow-sm transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+            >
+              {isTailoring ? "Tailoring resume..." : "Tailor resume with AI"}
+            </button>
+
+            {uploadedResume && (
+              <a
+                href={uploadedResume.url}
+                download={uploadedResume.file.name}
+                className="inline-flex items-center justify-center rounded-full border border-slate-600 bg-slate-900 px-4 py-2 text-sm font-medium text-slate-50 shadow-sm transition hover:border-emerald-400/80 hover:text-emerald-200"
+              >
+                Download uploaded resume
+              </a>
+            )}
+            {error && (
+              <p className="basis-full text-xs font-medium text-red-400">
+                {error}
+              </p>
+            )}
+          </div>
+        </section>
       </main>
+
+      {/* Preview section */}
+      <section className="mx-auto flex max-w-6xl flex-col gap-4 px-6 pb-12 md:px-10">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h2 className="text-base font-semibold text-slate-100">
+              Resume preview
+            </h2>
+            <p className="text-xs text-slate-400">
+              See your uploaded resume on the left and, when available, the AI
+              tailored version below.
+            </p>
+          </div>
+        </div>
+
+        <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/70 shadow-lg shadow-slate-950/70">
+          {uploadedResume ? (
+            <div className="flex flex-col gap-4 p-4 md:flex-row">
+              <div className="w-full space-y-2 text-xs text-slate-300 md:max-w-xs">
+                <p className="font-medium text-slate-100">File details</p>
+                <p>
+                  Name:{" "}
+                  <span className="font-medium text-emerald-300">
+                    {uploadedResume.file.name}
+                  </span>
+                </p>
+                <p>
+                  Type:{" "}
+                  <span className="font-mono">
+                    {uploadedResume.file.type || "Unknown"}
+                  </span>
+                </p>
+                <p>Size: {Math.round(uploadedResume.file.size / 1024)} KB</p>
+                {!isPdf && (
+                  <p className="mt-1 text-xs text-slate-400">
+                    Preview is available for PDF files. DOC/DOCX files can still
+                    be downloaded using the button above.
+                  </p>
+                )}
+              </div>
+
+              <div className="h-[320px] flex-1 rounded-xl border border-slate-800 bg-slate-900/80">
+                {isPdf ? (
+                  <iframe
+                    src={uploadedResume.url}
+                    title="Uploaded resume preview"
+                    className="h-full w-full rounded-xl border-none"
+                  />
+                ) : (
+                  <div className="flex h-full items-center justify-center px-4 text-center text-xs text-slate-400">
+                    Preview is only available for PDF resumes. Your DOC/DOCX
+                    file is ready to download using the button above.
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="flex h-52 flex-col items-center justify-center gap-2 px-4 text-center text-sm text-slate-400">
+              <p className="font-medium text-slate-200">
+                No resume uploaded yet.
+              </p>
+              <p>
+                Upload a PDF or DOCX resume above to see it listed here and, if
+                it&apos;s a PDF, preview it directly in your browser.
+              </p>
+            </div>
+          )}
+        </div>
+
+        {tailoredResumeText && (
+          <div className="mt-6 space-y-3 rounded-2xl border border-emerald-700/70 bg-slate-950/60 p-4 shadow-lg shadow-emerald-900/60">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-semibold text-emerald-300">
+                  AI-tailored resume
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Copy the text into your editor or download it as a plain text
+                  file.
+                </p>
+              </div>
+              {tailoredDownloadUrl && (
+                <a
+                  href={tailoredDownloadUrl}
+                  download={
+                    uploadedResume
+                      ? uploadedResume.file.name.replace(
+                          /\.[^.]+$/,
+                          "-qfix-tailored.txt",
+                        )
+                      : "qfix-tailored-resume.txt"
+                  }
+                  className="inline-flex items-center justify-center rounded-full border border-emerald-500/70 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-200 transition hover:bg-emerald-500/20"
+                >
+                  Download tailored resume (.txt)
+                </a>
+              )}
+            </div>
+            <div className="max-h-96 overflow-auto rounded-xl border border-slate-800 bg-slate-950/80 p-3 text-xs font-mono leading-relaxed text-slate-100">
+              <pre className="whitespace-pre-wrap break-words">
+                {tailoredResumeText}
+              </pre>
+            </div>
+          </div>
+        )}
+      </section>
     </div>
   );
 }
