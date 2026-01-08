@@ -11,6 +11,8 @@ export default function Home() {
   const [uploadedResume, setUploadedResume] = useState<UploadedResume | null>(
     null,
   );
+  const [pastedResumeText, setPastedResumeText] = useState("");
+  const [usePastedText, setUsePastedText] = useState(false);
   const [jobDescription, setJobDescription] = useState("");
   const [isTailoring, setIsTailoring] = useState(false);
   const [tailoredResumeText, setTailoredResumeText] = useState<string | null>(
@@ -62,7 +64,7 @@ export default function Home() {
   };
 
   const handleTailorClick = async () => {
-    if (!uploadedResume || !jobDescription.trim()) {
+    if ((!uploadedResume && !pastedResumeText.trim()) || !jobDescription.trim()) {
       return;
     }
 
@@ -76,7 +78,11 @@ export default function Home() {
 
     try {
       const formData = new FormData();
-      formData.append("resume", uploadedResume.file);
+      if (uploadedResume && !usePastedText) {
+        formData.append("resume", uploadedResume.file);
+      } else if (pastedResumeText.trim()) {
+        formData.append("resumeText", pastedResumeText.trim());
+      }
       formData.append("jobDescription", jobDescription);
 
       const response = await fetch("/api/tailor", {
@@ -90,16 +96,26 @@ export default function Home() {
         throw new Error(data.error || "Failed to tailor resume.");
       }
 
-      const text = String(data.tailoredResumeText || "").trim();
-      if (!text) {
-        throw new Error("Received empty tailored resume from the server.");
+      // Handle PDF download
+      if (data.tailoredResumePdf) {
+        // Convert base64 to blob
+        const pdfBase64 = data.tailoredResumePdf;
+        const byteCharacters = atob(pdfBase64);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const blob = new Blob([byteArray], { type: "application/pdf" });
+        const url = URL.createObjectURL(blob);
+        setTailoredDownloadUrl(url);
       }
 
-      setTailoredResumeText(text);
-
-      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      setTailoredDownloadUrl(url);
+      // Also store LaTeX text for display
+      const latexText = String(data.tailoredResumeText || "").trim();
+      if (latexText) {
+        setTailoredResumeText(latexText);
+      }
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Something went wrong.";
@@ -152,45 +168,93 @@ export default function Home() {
               Get your resume ready in three steps
             </h2>
             <p className="text-sm text-slate-400">
-              1. Upload your resume · 2. Paste the job description · 3. Preview
-              &amp; download.
+              1. Upload your resume or paste its content · 2. Paste the job
+              description · 3. Get your ATS-friendly tailored resume.
             </p>
           </div>
 
-          {/* Upload */}
+          {/* Resume Input - File Upload or Paste */}
           <div className="space-y-3">
-            <label className="text-sm font-medium text-slate-200">
-              Upload your resume
-            </label>
-            <div className="flex flex-col gap-3 rounded-xl border border-dashed border-slate-700/90 bg-slate-900/60 p-4 text-sm text-slate-300">
-              <div className="flex flex-wrap items-center gap-3">
-                <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-full bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 shadow-md shadow-emerald-500/40 transition hover:bg-emerald-400 hover:shadow-emerald-400/40">
-                  <input
-                    type="file"
-                    accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    className="hidden"
-                    onChange={handleFileChange}
-                  />
-                  <span>Choose file</span>
-                </label>
-                <div className="text-xs text-slate-400">
-                  PDF or DOCX files are supported. Max ~10MB recommended.
-                </div>
-              </div>
-              <div className="text-xs text-slate-300">
-                {uploadedResume ? (
-                  <span>
-                    Selected:{" "}
-                    <span className="font-medium text-emerald-300">
-                      {uploadedResume.file.name}
-                    </span>{" "}
-                    ({Math.round(uploadedResume.file.size / 1024)} KB)
-                  </span>
-                ) : (
-                  <span>No file selected yet.</span>
-                )}
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium text-slate-200">
+                Your resume
+              </label>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUsePastedText(false);
+                    setPastedResumeText("");
+                  }}
+                  className={`text-xs px-2 py-1 rounded transition ${
+                    !usePastedText
+                      ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/50"
+                      : "text-slate-400 hover:text-slate-300"
+                  }`}
+                >
+                  Upload file
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUsePastedText(true);
+                    setUploadedResume(null);
+                  }}
+                  className={`text-xs px-2 py-1 rounded transition ${
+                    usePastedText
+                      ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/50"
+                      : "text-slate-400 hover:text-slate-300"
+                  }`}
+                >
+                  Paste text
+                </button>
               </div>
             </div>
+
+            {!usePastedText ? (
+              <div className="flex flex-col gap-3 rounded-xl border border-dashed border-slate-700/90 bg-slate-900/60 p-4 text-sm text-slate-300">
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-full bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 shadow-md shadow-emerald-500/40 transition hover:bg-emerald-400 hover:shadow-emerald-400/40">
+                    <input
+                      type="file"
+                      accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                      className="hidden"
+                      onChange={handleFileChange}
+                    />
+                    <span>Choose file</span>
+                  </label>
+                  <div className="text-xs text-slate-400">
+                    PDF or DOCX files are supported. Max ~10MB recommended.
+                  </div>
+                </div>
+                <div className="text-xs text-slate-300">
+                  {uploadedResume ? (
+                    <span>
+                      Selected:{" "}
+                      <span className="font-medium text-emerald-300">
+                        {uploadedResume.file.name}
+                      </span>{" "}
+                      ({Math.round(uploadedResume.file.size / 1024)} KB)
+                    </span>
+                  ) : (
+                    <span>No file selected yet.</span>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <textarea
+                  value={pastedResumeText}
+                  onChange={(e) => setPastedResumeText(e.target.value)}
+                  placeholder="Paste your resume content here. Include all sections: contact information, professional summary, work experience, education, skills, etc."
+                  className="min-h-[200px] w-full resize-none rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none ring-0 transition placeholder:text-slate-500 focus:border-emerald-400/70 focus:ring-2 focus:ring-emerald-500/40"
+                />
+                <p className="text-xs text-slate-400">
+                  Paste the complete text content of your resume. The AI will
+                  reword and format it to be ATS-friendly and professional.
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Job Description */}
@@ -211,7 +275,8 @@ export default function Home() {
             <p className="text-xs text-slate-400">
               We don&apos;t store your resume or job description. Tailoring is
               done via a secure AI API, and this demo keeps everything tied to
-              your current session.
+              your current session. The AI will create an ATS-friendly, clean,
+              and professional resume tailored to the job description.
             </p>
           </div>
 
@@ -219,7 +284,11 @@ export default function Home() {
           <div className="mt-2 flex flex-wrap items-center gap-3 border-t border-slate-800 pt-4">
             <button
               type="button"
-              disabled={!uploadedResume || !jobDescription.trim() || isTailoring}
+              disabled={
+                (!uploadedResume && !pastedResumeText.trim()) ||
+                !jobDescription.trim() ||
+                isTailoring
+              }
               onClick={handleTailorClick}
               className="inline-flex items-center justify-center rounded-full bg-slate-50 px-4 py-2 text-sm font-semibold text-slate-950 shadow-sm transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
             >
@@ -252,14 +321,36 @@ export default function Home() {
               Resume preview
             </h2>
             <p className="text-xs text-slate-400">
-              See your uploaded resume on the left and, when available, the AI
-              tailored version below.
+              {usePastedText && pastedResumeText
+                ? "Your pasted resume content is ready. The AI tailored version will appear below after processing."
+                : "See your uploaded resume on the left and, when available, the AI tailored version below."}
             </p>
           </div>
         </div>
 
         <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/70 shadow-lg shadow-slate-950/70">
-          {uploadedResume ? (
+          {usePastedText && pastedResumeText ? (
+            <div className="p-4">
+              <div className="mb-3 space-y-2 text-xs text-slate-300">
+                <p className="font-medium text-slate-100">Pasted resume content</p>
+                <p>
+                  Characters:{" "}
+                  <span className="font-medium text-emerald-300">
+                    {pastedResumeText.length.toLocaleString()}
+                  </span>
+                </p>
+                <p className="text-slate-400">
+                  Your resume content is ready for tailoring. The AI will create
+                  an ATS-friendly version based on the job description.
+                </p>
+              </div>
+              <div className="max-h-96 overflow-auto rounded-xl border border-slate-800 bg-slate-900/80 p-3 text-xs font-mono leading-relaxed text-slate-100">
+                <pre className="whitespace-pre-wrap break-words">
+                  {pastedResumeText}
+                </pre>
+              </div>
+            </div>
+          ) : uploadedResume ? (
             <div className="flex flex-col gap-4 p-4 md:flex-row">
               <div className="w-full space-y-2 text-xs text-slate-300 md:max-w-xs">
                 <p className="font-medium text-slate-100">File details</p>
@@ -302,11 +393,11 @@ export default function Home() {
           ) : (
             <div className="flex h-52 flex-col items-center justify-center gap-2 px-4 text-center text-sm text-slate-400">
               <p className="font-medium text-slate-200">
-                No resume uploaded yet.
+                No resume provided yet.
               </p>
               <p>
-                Upload a PDF or DOCX resume above to see it listed here and, if
-                it&apos;s a PDF, preview it directly in your browser.
+                Upload a PDF or DOCX resume, or paste your resume content above
+                to get started.
               </p>
             </div>
           )}
@@ -320,8 +411,8 @@ export default function Home() {
                   AI-tailored resume
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Copy the text into your editor or download it as a plain text
-                  file.
+                  Your professionally formatted resume is ready. Download as PDF
+                  or view the LaTeX source code below.
                 </p>
               </div>
               {tailoredDownloadUrl && (
@@ -331,21 +422,35 @@ export default function Home() {
                     uploadedResume
                       ? uploadedResume.file.name.replace(
                           /\.[^.]+$/,
-                          "-qfix-tailored.txt",
+                          "-qfix-tailored.pdf",
                         )
-                      : "qfix-tailored-resume.txt"
+                      : "qfix-tailored-resume.pdf"
                   }
                   className="inline-flex items-center justify-center rounded-full border border-emerald-500/70 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-200 transition hover:bg-emerald-500/20"
                 >
-                  Download tailored resume (.txt)
+                  Download tailored resume (PDF)
                 </a>
               )}
             </div>
-            <div className="max-h-96 overflow-auto rounded-xl border border-slate-800 bg-slate-950/80 p-3 text-xs font-mono leading-relaxed text-slate-100">
-              <pre className="whitespace-pre-wrap break-words">
-                {tailoredResumeText}
-              </pre>
-            </div>
+            {tailoredDownloadUrl && (
+              <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-2">
+                <iframe
+                  src={tailoredDownloadUrl}
+                  title="Tailored resume PDF preview"
+                  className="h-[600px] w-full rounded-lg"
+                />
+              </div>
+            )}
+            <details className="mt-2">
+              <summary className="cursor-pointer text-xs font-medium text-slate-400 hover:text-slate-300">
+                View LaTeX source code
+              </summary>
+              <div className="mt-2 max-h-96 overflow-auto rounded-xl border border-slate-800 bg-slate-950/80 p-3 text-xs font-mono leading-relaxed text-slate-100">
+                <pre className="whitespace-pre-wrap break-words">
+                  {tailoredResumeText}
+                </pre>
+              </div>
+            </details>
           </div>
         )}
       </section>
