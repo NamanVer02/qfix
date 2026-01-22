@@ -21,6 +21,9 @@ export default function Home() {
   const [tailoredDownloadUrl, setTailoredDownloadUrl] = useState<string | null>(
     null,
   );
+  const [tailoredFilename, setTailoredFilename] = useState<string | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -71,6 +74,7 @@ export default function Home() {
     setIsTailoring(true);
     setError(null);
     setTailoredResumeText(null);
+    setTailoredFilename(null);
     if (tailoredDownloadUrl) {
       URL.revokeObjectURL(tailoredDownloadUrl);
       setTailoredDownloadUrl(null);
@@ -109,6 +113,18 @@ export default function Home() {
         const blob = new Blob([byteArray], { type: "application/pdf" });
         const url = URL.createObjectURL(blob);
         setTailoredDownloadUrl(url);
+      }
+
+      // Store filename if provided
+      if (data.filename) {
+        setTailoredFilename(data.filename);
+      } else {
+        // Fallback filename
+        setTailoredFilename(
+          uploadedResume
+            ? uploadedResume.file.name.replace(/\.[^.]+$/, "-qfix-tailored.pdf")
+            : "qfix-tailored-resume.pdf"
+        );
       }
 
       // Also store LaTeX text for display
@@ -418,14 +434,7 @@ export default function Home() {
               {tailoredDownloadUrl && (
                 <a
                   href={tailoredDownloadUrl}
-                  download={
-                    uploadedResume
-                      ? uploadedResume.file.name.replace(
-                          /\.[^.]+$/,
-                          "-qfix-tailored.pdf",
-                        )
-                      : "qfix-tailored-resume.pdf"
-                  }
+                  download={tailoredFilename || "qfix-tailored-resume.pdf"}
                   className="inline-flex items-center justify-center rounded-full border border-emerald-500/70 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-200 transition hover:bg-emerald-500/20"
                 >
                   Download tailored resume (PDF)

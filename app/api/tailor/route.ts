@@ -117,6 +117,58 @@ function latexToHtml(latexCode: string): string {
   return wrappedLines.join('\n');
 }
 
+function extractNameFromLatex(latexCode: string): string {
+  // Try to extract name from LaTeX code
+  // Look for patterns like \textbf{\Large Name} or \textbf{Name}
+  const patterns = [
+    /\\textbf\{\\Large\s+([^}]+)\}/,
+    /\\textbf\{([^}]+)\}.*?\\\\/,
+    /\\begin\{center\}[\s\S]*?\\textbf\{([^}]+)\}/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = latexCode.match(pattern);
+    if (match && match[1]) {
+      let name = match[1].trim();
+      // Clean up LaTeX commands that might be in the name
+      name = name.replace(/\\Large\s*/g, '');
+      name = name.replace(/\\textbf\{([^}]+)\}/g, '$1');
+      name = name.replace(/\\textit\{([^}]+)\}/g, '$1');
+      // Take first line if multiple lines
+      name = name.split('\\\\')[0].trim();
+      // Remove any remaining LaTeX commands
+      name = name.replace(/\\[a-zA-Z]+\{?[^}]*\}?/g, '').trim();
+      if (name && name.length > 0 && name.length < 100) {
+        return name;
+      }
+    }
+  }
+
+  // Fallback: try to extract from original resume text
+  return "";
+}
+
+function generateFilename(name: string, fallback: string = "Resume"): string {
+  if (!name || name.trim().length === 0) {
+    return `${fallback}_Tailored_Resume.pdf`;
+  }
+
+  // Clean the name: remove special characters, replace spaces with underscores
+  let cleanName = name
+    .trim()
+    .replace(/[^\w\s-]/g, '') // Remove special characters except spaces and hyphens
+    .replace(/\s+/g, '_') // Replace spaces with underscores
+    .replace(/_+/g, '_') // Replace multiple underscores with single
+    .replace(/^_|_$/g, ''); // Remove leading/trailing underscores
+
+  // Limit length
+  if (cleanName.length > 50) {
+    cleanName = cleanName.substring(0, 50);
+  }
+
+  return `${cleanName}_Tailored_Resume.pdf`;
+}
+
 async function latexToPdf(latexCode: string): Promise<Buffer> {
   try {
     // Convert LaTeX to HTML
@@ -248,14 +300,24 @@ You are an expert resume writer specializing in creating ATS-friendly (Applicant
 
 Your task:
 1. Analyze the candidate's resume and the job description
-2. Rewrite the resume to be clearly targeted to the job while remaining honest and realistic
-3. Ensure the resume is ATS-friendly and follows professional resume best practices
-4. Create a clean, well-structured, and professional document in LaTeX format
+2. Intelligently select ONLY the most relevant and impactful achievements that align with the job requirements
+3. Rewrite the resume to be clearly targeted to the job while remaining honest and realistic
+4. Ensure the resume is ATS-friendly and follows professional resume best practices
+5. Create a clean, well-structured, and professional document in LaTeX format
+6. CRITICAL: The resume MUST fit on a single page (A4 size with 0.75in margins)
 
-CRITICAL: You MUST return ONLY valid LaTeX code for the resume content (without \\documentclass, \\begin{document}, or \\end{document} - those will be added automatically). The LaTeX code should contain only the resume body content.
+CRITICAL REQUIREMENTS:
+- You MUST return ONLY valid LaTeX code for the resume content (without \\documentclass, \\begin{document}, or \\end{document} - those will be added automatically). The LaTeX code should contain only the resume body content.
+- The resume MUST fit on a single page. Be selective and concise.
+- DO NOT include a Professional Summary section - start directly with Work Experience after the contact information.
+- For each work experience position, include ONLY the 2-4 most relevant and impressive achievements that directly relate to the job description.
+- Prioritize achievements that: (1) are most relevant to the job requirements, (2) are quantifiable (numbers, percentages, dollar amounts), (3) demonstrate impact and results, (4) showcase skills mentioned in the job description.
+- If the candidate has many positions, you may need to include fewer bullet points per position or focus on the most recent/relevant roles.
+- Skills section should list only the most relevant skills for the job (typically 8-12 skills).
+- Education section should be brief - just degree, institution, and date.
 
 LaTeX Formatting Requirements:
-- Use \\section{Section Name} for main sections: "Contact Information", "Professional Summary" or "Summary", "Work Experience" or "Professional Experience", "Education", "Skills", "Certifications"
+- Use \\section{Section Name} for main sections: "Contact Information", "Work Experience" or "Professional Experience", "Education", "Skills", "Certifications"
 - Use \\textbf{text} for bold text (e.g., job titles, company names, degree names)
 - Use \\textit{text} for italic text (e.g., dates, locations)
 - Use \\begin{itemize} and \\end{itemize} with \\item for bullet points
@@ -282,20 +344,25 @@ Professional Standards:
 
 Structure Guidelines:
 - Start with candidate name (centered, large, bold): \\begin{center}\\textbf{\\Large Name}\\\\Contact Info\\end{center}
-- Follow with Professional Summary section
-- List Work Experience in reverse chronological order (most recent first)
-- Include Education section
-- Include Skills section (both technical and soft skills relevant to the job)
-- Add any relevant Certifications, Awards, or Additional sections if applicable
+- List Work Experience in reverse chronological order (most recent first) - start immediately after contact information
+  - For each position, include ONLY 2-4 bullet points with the most relevant achievements
+  - Prioritize achievements that match the job description requirements
+  - Focus on quantifiable results and impact
+- Include Education section (brief - degree, institution, date only)
+- Include Skills section (8-12 most relevant skills for the job)
+- Only add Certifications, Awards, or Additional sections if they are highly relevant to the job and space permits
+
+Single-Page Constraint:
+- The entire resume must fit on one A4 page with 0.75in margins
+- If you need to cut content, prioritize: (1) most recent/relevant work experience, (2) achievements that directly match job requirements, (3) skills mentioned in job description
+- Be ruthless in selecting only the best content - quality over quantity
+- Use concise language and avoid redundancy
 
 Example LaTeX structure:
 \\begin{center}
 \\textbf{\\Large John Doe}\\\\
 john.doe@email.com | (555) 123-4567 | linkedin.com/in/johndoe | City, State
 \\end{center}
-
-\\section{Professional Summary}
-Brief summary here...
 
 \\section{Work Experience}
 \\textbf{Job Title} \\hfill \\textit{Date Range}\\\\
@@ -405,6 +472,10 @@ export async function POST(req: NextRequest) {
       jobDescription,
     });
 
+    // Extract name from LaTeX code to generate filename
+    const extractedName = extractNameFromLatex(latexCode);
+    const filename = generateFilename(extractedName);
+
     // Convert LaTeX to PDF
     const pdfBuffer = await latexToPdf(latexCode);
 
@@ -414,6 +485,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       tailoredResumePdf: pdfBase64,
       tailoredResumeText: latexCode, // Also return LaTeX for reference
+      filename: filename, // Return suggested filename
     });
   } catch (error) {
     console.error("Error tailoring resume:", error);
