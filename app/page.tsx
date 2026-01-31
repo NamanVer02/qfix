@@ -1,6 +1,24 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useAuth } from "./auth-context";
+/** Fetches limit status from server so it matches enforcement (no client Firestore read). */
+async function fetchLimitStatus(userId: string): Promise<{ remaining: number; isSpecial: boolean }> {
+  const res = await fetch("/api/rate-limit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ userId, action: "check" }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to load limit status.");
+  }
+  const data = await res.json();
+  return {
+    remaining: typeof data.remaining === "number" ? data.remaining : 0,
+    isSpecial: Boolean(data.isSpecial),
+  };
+}
 
 type UploadedResume = {
   file: File;
@@ -8,6 +26,8 @@ type UploadedResume = {
 };
 
 export default function Home() {
+  const { user, loading, signInWithGoogle, logout } = useAuth();
+
   const [uploadedResume, setUploadedResume] = useState<UploadedResume | null>(
     null,
   );
@@ -25,6 +45,11 @@ export default function Home() {
     null,
   );
   const [error, setError] = useState<string | null>(null);
+  const [limitStatus, setLimitStatus] = useState<{
+    remaining: number;
+    isSpecial: boolean;
+  } | null>(null);
+  const [checkingLimit, setCheckingLimit] = useState(false);
 
   useEffect(() => {
     return () => {
@@ -36,6 +61,45 @@ export default function Home() {
       }
     };
   }, [uploadedResume, tailoredDownloadUrl]);
+
+  // Load user limit status from server when user changes (matches enforcement)
+  useEffect(() => {
+    if (user?.uid) {
+      fetchLimitStatus(user.uid)
+        .then((status) => {
+          setLimitStatus({
+            remaining: status.remaining,
+            isSpecial: status.isSpecial,
+          });
+        })
+        .catch(() => {
+          // Don't show "limit reached" when check failed (e.g. server error)
+          setLimitStatus(null);
+        });
+    } else {
+      setLimitStatus(null);
+    }
+  }, [user]);
+
+  // Clear all form data and uploads when user logs out so next login starts fresh
+  useEffect(() => {
+    if (!user) {
+      setUploadedResume((prev) => {
+        if (prev?.url) URL.revokeObjectURL(prev.url);
+        return null;
+      });
+      setPastedResumeText("");
+      setUsePastedText(false);
+      setJobDescription("");
+      setTailoredResumeText(null);
+      setTailoredDownloadUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+      setTailoredFilename(null);
+      setError(null);
+    }
+  }, [user]);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -71,6 +135,21 @@ export default function Home() {
       return;
     }
 
+    if (!user?.uid) {
+      setError("Please sign in to use this service.");
+      return;
+    }
+
+    // Check conversion limit from server (same source as enforcement)
+    setCheckingLimit(true);
+    const limitStatus = await fetchLimitStatus(user.uid);
+    setCheckingLimit(false);
+
+    if (!limitStatus.isSpecial && limitStatus.remaining === 0) {
+      setError("You have reached your daily limit of 1 conversion. Please try again tomorrow.");
+      return;
+    }
+
     setIsTailoring(true);
     setError(null);
     setTailoredResumeText(null);
@@ -88,6 +167,7 @@ export default function Home() {
         formData.append("resumeText", pastedResumeText.trim());
       }
       formData.append("jobDescription", jobDescription);
+      formData.append("userId", user.uid);
 
       const response = await fetch("/api/tailor", {
         method: "POST",
@@ -132,6 +212,16 @@ export default function Home() {
       if (latexText) {
         setTailoredResumeText(latexText);
       }
+
+      // Refresh limit status from server (conversion was recorded atomically by tailor API)
+      if (user?.uid) {
+        fetchLimitStatus(user.uid).then((updatedStatus) => {
+          setLimitStatus({
+            remaining: updatedStatus.remaining,
+            isSpecial: updatedStatus.isSpecial,
+          });
+        });
+      }
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Something went wrong.";
@@ -144,20 +234,166 @@ export default function Home() {
   const isPdf =
     uploadedResume && uploadedResume.file.type === "application/pdf";
 
-  return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900 text-slate-50">
-      <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-10 px-6 py-10 md:px-10 lg:flex-row lg:items-stretch lg:gap-16 lg:py-16">
-        {/* Left: Hero / Intro */}
-        <section className="flex flex-1 flex-col justify-between gap-10">
-          <div className="space-y-6">
-            <div className="inline-flex items-center gap-2 rounded-full border border-slate-700/80 bg-slate-900/60 px-3 py-1 text-xs font-medium text-slate-300 shadow-sm">
-              <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
-              Qfix Resume · Smart resume tailoring for every job
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-50">
+        <main className="mx-auto flex min-h-screen max-w-3xl flex-col items-center justify-center gap-6 px-6 py-10 text-center">
+          <div className="relative">
+            <div className="h-16 w-16 animate-spin rounded-full border-4 border-slate-700 border-t-emerald-400"></div>
+            <div className="absolute inset-0 h-16 w-16 animate-ping rounded-full border-4 border-emerald-400/20"></div>
+          </div>
+          <p className="text-sm font-medium text-slate-300">Loading Qfix Resume...</p>
+        </main>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-50">
+        {/* Animated background elements */}
+        <div className="absolute inset-0 overflow-hidden">
+          <div className="absolute -top-40 -right-40 h-80 w-80 rounded-full bg-emerald-500/10 blur-3xl animate-pulse"></div>
+          <div className="absolute -bottom-40 -left-40 h-80 w-80 rounded-full bg-cyan-500/10 blur-3xl animate-pulse delay-1000"></div>
+        </div>
+
+        <main className="relative mx-auto flex min-h-screen max-w-4xl flex-col items-center justify-center gap-8 px-6 py-12 text-center">
+          {/* Logo/Brand */}
+          <div className="space-y-4 animate-fade-in">
+            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-xs font-semibold text-emerald-300 shadow-lg shadow-emerald-500/20">
+              <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-emerald-400"></span>
+              Qfix Resume
             </div>
+            <h1 className="text-5xl font-bold tracking-tight text-slate-50 sm:text-6xl md:text-7xl">
+              Tailor Your Resume
+              <span className="block bg-gradient-to-r from-emerald-400 via-cyan-400 to-sky-400 bg-clip-text text-transparent">
+                To Every Job
+              </span>
+            </h1>
+            <p className="mx-auto max-w-2xl text-lg leading-relaxed text-slate-300 sm:text-xl">
+              Transform your resume into a perfect match for any job description with AI-powered tailoring. 
+              Get ATS-friendly, professional resumes in seconds.
+            </p>
+          </div>
+
+          {/* Features */}
+          <div className="grid w-full max-w-2xl grid-cols-1 gap-4 sm:grid-cols-3 animate-fade-in delay-200">
+            <div className="rounded-xl border border-slate-800/50 bg-slate-900/40 p-4 backdrop-blur-sm">
+              <div className="mb-2 text-2xl">⚡</div>
+              <div className="text-sm font-semibold text-slate-200">Lightning Fast</div>
+              <div className="mt-1 text-xs text-slate-400">Get results in seconds</div>
+            </div>
+            <div className="rounded-xl border border-slate-800/50 bg-slate-900/40 p-4 backdrop-blur-sm">
+              <div className="mb-2 text-2xl">🎯</div>
+              <div className="text-sm font-semibold text-slate-200">ATS Optimized</div>
+              <div className="mt-1 text-xs text-slate-400">Pass applicant tracking</div>
+            </div>
+            <div className="rounded-xl border border-slate-800/50 bg-slate-900/40 p-4 backdrop-blur-sm">
+              <div className="mb-2 text-2xl">🔒</div>
+              <div className="text-sm font-semibold text-slate-200">Secure & Private</div>
+              <div className="mt-1 text-xs text-slate-400">Your data stays safe</div>
+            </div>
+          </div>
+
+          {/* Sign In Button */}
+          <div className="space-y-4 animate-fade-in delay-300">
+            <button
+              type="button"
+              onClick={signInWithGoogle}
+              className="group relative inline-flex items-center justify-center gap-3 overflow-hidden rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-8 py-4 text-base font-semibold text-slate-950 shadow-2xl shadow-emerald-500/30 transition-all duration-300 hover:scale-105 hover:shadow-emerald-500/50 active:scale-95"
+            >
+              <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+                <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+              </svg>
+              <span>Continue with Google</span>
+              <div className="absolute inset-0 -z-10 bg-gradient-to-r from-emerald-600 to-cyan-600 opacity-0 transition-opacity duration-300 group-hover:opacity-100"></div>
+            </button>
+            <p className="text-xs text-slate-400">
+              By continuing, you agree to our Terms of Service and Privacy Policy
+            </p>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-50">
+      {/* Header with user profile */}
+      <header className="sticky top-0 z-50 border-b border-slate-800/50 bg-slate-950/80 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
+          <div className="flex items-center gap-3">
+            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300">
+              <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400"></span>
+              Qfix Resume
+            </div>
+          </div>
+          <div className="flex items-center gap-4">
+            {limitStatus && (
+              <div className="hidden items-center gap-2 rounded-lg border border-slate-800/50 bg-slate-900/40 px-3 py-1.5 sm:flex">
+                {limitStatus.isSpecial ? (
+                  <>
+                    <svg className="h-4 w-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                    </svg>
+                    <span className="text-xs font-medium text-emerald-300">Unlimited</span>
+                  </>
+                ) : (
+                  <>
+                    <svg className="h-4 w-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span className="text-xs font-medium text-slate-300">
+                      {limitStatus.remaining > 0 
+                        ? `${limitStatus.remaining} conversion${limitStatus.remaining === 1 ? '' : 's'} left today`
+                        : "Limit reached"}
+                    </span>
+                  </>
+                )}
+              </div>
+            )}
+            <div className="hidden items-center gap-3 sm:flex">
+              {user.photoURL && (
+                <img
+                  src={user.photoURL}
+                  alt={user.displayName || "User"}
+                  className="h-8 w-8 rounded-full border-2 border-slate-700"
+                />
+              )}
+              <div className="text-right">
+                <div className="text-xs font-medium text-slate-200">
+                  {user.displayName || "User"}
+                </div>
+                <div className="text-xs text-slate-400">
+                  {user.email}
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={logout}
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900/50 px-4 py-2 text-xs font-medium text-slate-300 transition-all hover:border-emerald-500/50 hover:bg-slate-800/50 hover:text-emerald-300"
+            >
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
+              Sign out
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="mx-auto flex min-h-[calc(100vh-73px)] max-w-7xl flex-col gap-8 px-6 py-8 md:px-10 lg:flex-row lg:items-start lg:gap-12 lg:py-12">
+        {/* Left: Hero / Intro */}
+        <section className="flex flex-1 flex-col gap-8 lg:sticky lg:top-[73px] lg:max-h-[calc(100vh-73px)]">
+          <div className="space-y-6">
             <div className="space-y-4">
-              <h1 className="text-balance text-4xl font-semibold tracking-tight text-slate-50 sm:text-5xl lg:text-6xl">
+              <h1 className="text-balance text-4xl font-bold tracking-tight text-slate-50 sm:text-5xl lg:text-6xl">
                 Tailor your resume
-                <span className="block bg-gradient-to-r from-emerald-300 via-cyan-300 to-sky-400 bg-clip-text text-transparent">
+                <span className="block bg-gradient-to-r from-emerald-400 via-cyan-400 to-sky-400 bg-clip-text text-transparent">
                   to every job description.
                 </span>
               </h1>
@@ -167,26 +403,49 @@ export default function Home() {
                 targeted version ready to send.
               </p>
             </div>
-          </div>
 
-          <div className="space-y-2 text-sm text-slate-400">
-            <p>
-              Upload your resume, paste the job description, and let Qfix
-              Resume suggest a tailored version you can copy or download.
-            </p>
+            {/* Quick stats or tips */}
+            <div className="rounded-xl border border-slate-800/50 bg-gradient-to-br from-slate-900/50 to-slate-950/50 p-4 backdrop-blur-sm">
+              <div className="flex items-start gap-3">
+                <div className="rounded-lg bg-emerald-500/20 p-2">
+                  <svg className="h-5 w-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </div>
+                <div className="flex-1 space-y-1">
+                  <div className="text-sm font-semibold text-slate-200">Pro Tip</div>
+                  <p className="text-xs leading-relaxed text-slate-400">
+                    Include quantifiable achievements in your resume for better results. The AI will highlight and enhance them based on the job requirements.
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
 
         {/* Right: Upload & Job Description */}
-        <section className="flex flex-1 flex-col gap-6 rounded-2xl border border-slate-800 bg-slate-900/70 p-6 shadow-xl shadow-slate-950/60 backdrop-blur-lg md:p-7">
-          <div className="space-y-2">
-            <h2 className="text-lg font-semibold text-slate-50">
-              Get your resume ready in three steps
-            </h2>
-            <p className="text-sm text-slate-400">
-              1. Upload your resume or paste its content · 2. Paste the job
-              description · 3. Get your ATS-friendly tailored resume.
-            </p>
+        <section className="flex flex-1 flex-col gap-6 rounded-2xl border border-slate-800/50 bg-gradient-to-br from-slate-900/80 to-slate-950/80 p-6 shadow-2xl shadow-slate-950/80 backdrop-blur-xl md:p-8">
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <div className="rounded-lg bg-emerald-500/20 p-1.5">
+                <svg className="h-5 w-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+              </div>
+              <h2 className="text-xl font-bold text-slate-50">
+                Get Started
+              </h2>
+            </div>
+            <div className="flex items-center gap-2 text-sm text-slate-400">
+              <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500/20 text-xs font-semibold text-emerald-300">1</span>
+              <span>Upload or paste resume</span>
+              <span className="text-slate-600">·</span>
+              <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-slate-800 text-xs font-semibold text-slate-400">2</span>
+              <span>Add job description</span>
+              <span className="text-slate-600">·</span>
+              <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-slate-800 text-xs font-semibold text-slate-400">3</span>
+              <span>Get tailored resume</span>
+            </div>
           </div>
 
           {/* Resume Input - File Upload or Paste */}
@@ -195,20 +454,20 @@ export default function Home() {
               <label className="text-sm font-medium text-slate-200">
                 Your resume
               </label>
-              <div className="flex items-center gap-2">
+              <div className="inline-flex items-center gap-1 rounded-lg border border-slate-800/50 bg-slate-950/60 p-1">
                 <button
                   type="button"
                   onClick={() => {
                     setUsePastedText(false);
                     setPastedResumeText("");
                   }}
-                  className={`text-xs px-2 py-1 rounded transition ${
+                  className={`text-xs px-3 py-1.5 rounded-md font-medium transition-all ${
                     !usePastedText
-                      ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/50"
+                      ? "bg-emerald-500/20 text-emerald-300 shadow-sm"
                       : "text-slate-400 hover:text-slate-300"
                   }`}
                 >
-                  Upload file
+                  Upload
                 </button>
                 <button
                   type="button"
@@ -216,46 +475,51 @@ export default function Home() {
                     setUsePastedText(true);
                     setUploadedResume(null);
                   }}
-                  className={`text-xs px-2 py-1 rounded transition ${
+                  className={`text-xs px-3 py-1.5 rounded-md font-medium transition-all ${
                     usePastedText
-                      ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/50"
+                      ? "bg-emerald-500/20 text-emerald-300 shadow-sm"
                       : "text-slate-400 hover:text-slate-300"
                   }`}
                 >
-                  Paste text
+                  Paste
                 </button>
               </div>
             </div>
 
             {!usePastedText ? (
-              <div className="flex flex-col gap-3 rounded-xl border border-dashed border-slate-700/90 bg-slate-900/60 p-4 text-sm text-slate-300">
-                <div className="flex flex-wrap items-center gap-3">
-                  <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-full bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 shadow-md shadow-emerald-500/40 transition hover:bg-emerald-400 hover:shadow-emerald-400/40">
+              <div className="flex flex-col gap-4 rounded-xl border-2 border-dashed border-slate-700/50 bg-slate-950/40 p-6 text-sm transition-colors hover:border-emerald-500/30">
+                <div className="flex flex-col items-center gap-4 text-center">
+                  <label className="group relative inline-flex cursor-pointer items-center justify-center gap-2 overflow-hidden rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-6 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-emerald-500/30 transition-all hover:scale-105 hover:shadow-emerald-500/50 active:scale-95">
                     <input
                       type="file"
                       accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                       className="hidden"
                       onChange={handleFileChange}
                     />
-                    <span>Choose file</span>
+                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                    </svg>
+                    <span>Choose File</span>
                   </label>
                   <div className="text-xs text-slate-400">
-                    PDF or DOCX files are supported. Max ~10MB recommended.
+                    PDF or DOCX files · Max ~10MB
                   </div>
                 </div>
-                <div className="text-xs text-slate-300">
-                  {uploadedResume ? (
-                    <span>
-                      Selected:{" "}
-                      <span className="font-medium text-emerald-300">
+                {uploadedResume && (
+                  <div className="mt-2 flex items-center gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3">
+                    <svg className="h-5 w-5 flex-shrink-0 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <div className="flex-1 min-w-0">
+                      <div className="truncate text-sm font-medium text-emerald-300">
                         {uploadedResume.file.name}
-                      </span>{" "}
-                      ({Math.round(uploadedResume.file.size / 1024)} KB)
-                    </span>
-                  ) : (
-                    <span>No file selected yet.</span>
-                  )}
-                </div>
+                      </div>
+                      <div className="text-xs text-slate-400">
+                        {Math.round(uploadedResume.file.size / 1024)} KB
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="space-y-2">
@@ -263,11 +527,13 @@ export default function Home() {
                   value={pastedResumeText}
                   onChange={(e) => setPastedResumeText(e.target.value)}
                   placeholder="Paste your resume content here. Include all sections: contact information, professional summary, work experience, education, skills, etc."
-                  className="min-h-[200px] w-full resize-none rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none ring-0 transition placeholder:text-slate-500 focus:border-emerald-400/70 focus:ring-2 focus:ring-emerald-500/40"
+                  className="min-h-[200px] w-full resize-none rounded-xl border border-slate-700/50 bg-slate-950/60 px-4 py-3 text-sm text-slate-100 outline-none ring-0 transition-all placeholder:text-slate-500 focus:border-emerald-500/50 focus:bg-slate-950/80 focus:ring-2 focus:ring-emerald-500/20"
                 />
-                <p className="text-xs text-slate-400">
-                  Paste the complete text content of your resume. The AI will
-                  reword and format it to be ATS-friendly and professional.
+                <p className="flex items-center gap-2 text-xs text-slate-400">
+                  <svg className="h-4 w-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  Paste the complete text content. The AI will reword and format it to be ATS-friendly and professional.
                 </p>
               </div>
             )}
@@ -277,184 +543,280 @@ export default function Home() {
           <div className="space-y-2">
             <label
               htmlFor="job-description"
-              className="text-sm font-medium text-slate-200"
+              className="flex items-center gap-2 text-sm font-semibold text-slate-200"
             >
-              Job description
+              <svg className="h-4 w-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+              </svg>
+              Job Description
             </label>
             <textarea
               id="job-description"
               value={jobDescription}
               onChange={(e) => setJobDescription(e.target.value)}
-              placeholder="Paste the job description here. Qfix Resume will soon analyze this and highlight how to adapt your resume."
-              className="min-h-[150px] w-full resize-none rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none ring-0 transition placeholder:text-slate-500 focus:border-emerald-400/70 focus:ring-2 focus:ring-emerald-500/40"
+              placeholder="Paste the job description here. Qfix Resume will analyze this and tailor your resume accordingly."
+              className="min-h-[150px] w-full resize-none rounded-xl border border-slate-700/50 bg-slate-950/60 px-4 py-3 text-sm text-slate-100 outline-none ring-0 transition-all placeholder:text-slate-500 focus:border-emerald-500/50 focus:bg-slate-950/80 focus:ring-2 focus:ring-emerald-500/20"
             />
-            <p className="text-xs text-slate-400">
-              We don&apos;t store your resume or job description. Tailoring is
-              done via a secure AI API, and this demo keeps everything tied to
-              your current session. The AI will create an ATS-friendly, clean,
-              and professional resume tailored to the job description.
+            <p className="flex items-start gap-2 text-xs text-slate-400">
+              <svg className="h-4 w-4 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+              </svg>
+              <span>Your data is processed securely and not stored. The AI creates an ATS-friendly, professional resume tailored to this job description.</span>
             </p>
           </div>
 
           {/* Actions */}
-          <div className="mt-2 flex flex-wrap items-center gap-3 border-t border-slate-800 pt-4">
+          <div className="mt-4 flex flex-col gap-3 border-t border-slate-800/50 pt-6">
+            {limitStatus && !limitStatus.isSpecial && (
+              <div className={`flex items-center justify-between rounded-lg border px-4 py-2.5 ${
+                limitStatus.remaining > 0
+                  ? "border-emerald-500/30 bg-emerald-500/10"
+                  : "border-amber-500/30 bg-amber-500/10"
+              }`}>
+                <div className="flex items-center gap-2">
+                  {limitStatus.remaining > 0 ? (
+                    <>
+                      <svg className="h-4 w-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <span className="text-xs font-medium text-emerald-300">
+                        {limitStatus.remaining} conversion{limitStatus.remaining === 1 ? '' : 's'} remaining today
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <svg className="h-4 w-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <span className="text-xs font-medium text-amber-300">
+                        Daily limit reached. Try again tomorrow!
+                      </span>
+                    </>
+                  )}
+                </div>
+                {limitStatus.remaining === 0 && (
+                  <span className="text-xs text-amber-400/70">
+                    Resets at midnight
+                  </span>
+                )}
+              </div>
+            )}
             <button
               type="button"
               disabled={
                 (!uploadedResume && !pastedResumeText.trim()) ||
                 !jobDescription.trim() ||
-                isTailoring
+                isTailoring ||
+                checkingLimit ||
+                (limitStatus !== null && !limitStatus.isSpecial && limitStatus.remaining === 0)
               }
               onClick={handleTailorClick}
-              className="inline-flex items-center justify-center rounded-full bg-slate-50 px-4 py-2 text-sm font-semibold text-slate-950 shadow-sm transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+              className="group relative inline-flex items-center justify-center gap-2 overflow-hidden rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-6 py-3.5 text-sm font-semibold text-slate-950 shadow-lg shadow-emerald-500/30 transition-all disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:scale-100 hover:scale-[1.02] hover:shadow-emerald-500/50 active:scale-[0.98]"
             >
-              {isTailoring ? "Tailoring resume..." : "Tailor resume with AI"}
+              {isTailoring ? (
+                <>
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-slate-950 border-t-transparent"></div>
+                  <span>Tailoring your resume...</span>
+                </>
+              ) : (
+                <>
+                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                  <span>Tailor Resume with AI</span>
+                </>
+              )}
             </button>
 
             {uploadedResume && (
               <a
                 href={uploadedResume.url}
                 download={uploadedResume.file.name}
-                className="inline-flex items-center justify-center rounded-full border border-slate-600 bg-slate-900 px-4 py-2 text-sm font-medium text-slate-50 shadow-sm transition hover:border-emerald-400/80 hover:text-emerald-200"
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900/50 px-4 py-2.5 text-sm font-medium text-slate-200 transition-all hover:border-emerald-500/50 hover:bg-slate-800/50 hover:text-emerald-300"
               >
-                Download uploaded resume
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                Download Original Resume
               </a>
             )}
             {error && (
-              <p className="basis-full text-xs font-medium text-red-400">
-                {error}
-              </p>
+              <div className="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3">
+                <svg className="h-5 w-5 flex-shrink-0 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <p className="text-sm font-medium text-red-300">{error}</p>
+              </div>
             )}
           </div>
         </section>
       </main>
 
       {/* Preview section */}
-      <section className="mx-auto flex max-w-6xl flex-col gap-4 px-6 pb-12 md:px-10">
+      <section className="mx-auto flex max-w-7xl flex-col gap-6 px-6 pb-16 md:px-10">
         <div className="flex items-center justify-between gap-4">
-          <div>
-            <h2 className="text-base font-semibold text-slate-100">
-              Resume preview
+          <div className="space-y-1">
+            <h2 className="flex items-center gap-2 text-xl font-bold text-slate-100">
+              <svg className="h-5 w-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+              </svg>
+              Resume Preview
             </h2>
-            <p className="text-xs text-slate-400">
+            <p className="text-sm text-slate-400">
               {usePastedText && pastedResumeText
                 ? "Your pasted resume content is ready. The AI tailored version will appear below after processing."
-                : "See your uploaded resume on the left and, when available, the AI tailored version below."}
+                : "See your uploaded resume and the AI tailored version below."}
             </p>
           </div>
         </div>
 
-        <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/70 shadow-lg shadow-slate-950/70">
+        <div className="overflow-hidden rounded-2xl border border-slate-800/50 bg-gradient-to-br from-slate-900/80 to-slate-950/80 shadow-2xl shadow-slate-950/80 backdrop-blur-xl">
           {usePastedText && pastedResumeText ? (
-            <div className="p-4">
-              <div className="mb-3 space-y-2 text-xs text-slate-300">
-                <p className="font-medium text-slate-100">Pasted resume content</p>
-                <p>
-                  Characters:{" "}
-                  <span className="font-medium text-emerald-300">
-                    {pastedResumeText.length.toLocaleString()}
-                  </span>
-                </p>
-                <p className="text-slate-400">
-                  Your resume content is ready for tailoring. The AI will create
-                  an ATS-friendly version based on the job description.
-                </p>
+            <div className="p-6">
+              <div className="mb-4 flex items-center justify-between">
+                <div className="space-y-1">
+                  <p className="text-sm font-semibold text-slate-100">Pasted Resume Content</p>
+                  <p className="text-xs text-slate-400">
+                    {pastedResumeText.length.toLocaleString()} characters
+                  </p>
+                </div>
+                <div className="rounded-lg bg-emerald-500/20 px-3 py-1.5">
+                  <span className="text-xs font-semibold text-emerald-300">Ready</span>
+                </div>
               </div>
-              <div className="max-h-96 overflow-auto rounded-xl border border-slate-800 bg-slate-900/80 p-3 text-xs font-mono leading-relaxed text-slate-100">
+              <div className="max-h-96 overflow-auto rounded-xl border border-slate-800/50 bg-slate-950/60 p-4 text-xs font-mono leading-relaxed text-slate-200">
                 <pre className="whitespace-pre-wrap break-words">
                   {pastedResumeText}
                 </pre>
               </div>
             </div>
           ) : uploadedResume ? (
-            <div className="flex flex-col gap-4 p-4 md:flex-row">
-              <div className="w-full space-y-2 text-xs text-slate-300 md:max-w-xs">
-                <p className="font-medium text-slate-100">File details</p>
-                <p>
-                  Name:{" "}
-                  <span className="font-medium text-emerald-300">
-                    {uploadedResume.file.name}
-                  </span>
-                </p>
-                <p>
-                  Type:{" "}
-                  <span className="font-mono">
-                    {uploadedResume.file.type || "Unknown"}
-                  </span>
-                </p>
-                <p>Size: {Math.round(uploadedResume.file.size / 1024)} KB</p>
+            <div className="flex flex-col gap-6 p-6 md:flex-row">
+              <div className="w-full space-y-3 rounded-xl border border-slate-800/50 bg-slate-950/60 p-4 md:max-w-xs">
+                <p className="text-sm font-semibold text-slate-100">File Details</p>
+                <div className="space-y-2 text-xs">
+                  <div>
+                    <span className="text-slate-400">Name:</span>
+                    <p className="mt-0.5 truncate font-medium text-emerald-300">
+                      {uploadedResume.file.name}
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-slate-400">Type:</span>
+                    <p className="mt-0.5 font-mono text-slate-300">
+                      {uploadedResume.file.type || "Unknown"}
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-slate-400">Size:</span>
+                    <p className="mt-0.5 text-slate-300">
+                      {Math.round(uploadedResume.file.size / 1024)} KB
+                    </p>
+                  </div>
+                </div>
                 {!isPdf && (
-                  <p className="mt-1 text-xs text-slate-400">
-                    Preview is available for PDF files. DOC/DOCX files can still
-                    be downloaded using the button above.
-                  </p>
+                  <div className="mt-3 rounded-lg bg-amber-500/10 border border-amber-500/20 p-2">
+                    <p className="text-xs text-amber-300">
+                      Preview available for PDF files. DOC/DOCX files can be downloaded above.
+                    </p>
+                  </div>
                 )}
               </div>
 
-              <div className="h-[320px] flex-1 rounded-xl border border-slate-800 bg-slate-900/80">
+              <div className="h-[400px] flex-1 rounded-xl border border-slate-800/50 bg-slate-950/60 overflow-hidden">
                 {isPdf ? (
                   <iframe
                     src={uploadedResume.url}
                     title="Uploaded resume preview"
-                    className="h-full w-full rounded-xl border-none"
+                    className="h-full w-full border-none"
                   />
                 ) : (
-                  <div className="flex h-full items-center justify-center px-4 text-center text-xs text-slate-400">
-                    Preview is only available for PDF resumes. Your DOC/DOCX
-                    file is ready to download using the button above.
+                  <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+                    <div className="rounded-full bg-slate-800 p-4">
+                      <svg className="h-8 w-8 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                    </div>
+                    <p className="text-sm font-medium text-slate-300">
+                      Preview available for PDF files
+                    </p>
+                    <p className="text-xs text-slate-400">
+                      Your DOC/DOCX file is ready to download
+                    </p>
                   </div>
                 )}
               </div>
             </div>
           ) : (
-            <div className="flex h-52 flex-col items-center justify-center gap-2 px-4 text-center text-sm text-slate-400">
-              <p className="font-medium text-slate-200">
-                No resume provided yet.
-              </p>
-              <p>
-                Upload a PDF or DOCX resume, or paste your resume content above
-                to get started.
-              </p>
+            <div className="flex h-64 flex-col items-center justify-center gap-4 px-6 py-12 text-center">
+              <div className="rounded-full bg-slate-800/50 p-4">
+                <svg className="h-10 w-10 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm font-semibold text-slate-200">
+                  No resume provided yet
+                </p>
+                <p className="text-xs text-slate-400">
+                  Upload a PDF or DOCX resume, or paste your resume content above to get started
+                </p>
+              </div>
             </div>
           )}
         </div>
 
         {tailoredResumeText && (
-          <div className="mt-6 space-y-3 rounded-2xl border border-emerald-700/70 bg-slate-950/60 p-4 shadow-lg shadow-emerald-900/60">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h3 className="text-sm font-semibold text-emerald-300">
-                  AI-tailored resume
-                </h3>
-                <p className="text-xs text-slate-400">
-                  Your professionally formatted resume is ready. Download as PDF
-                  or view the LaTeX source code below.
+          <div className="mt-6 space-y-4 rounded-2xl border-2 border-emerald-500/30 bg-gradient-to-br from-emerald-950/30 via-slate-950/80 to-slate-950/80 p-6 shadow-2xl shadow-emerald-900/30 backdrop-blur-xl">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <div className="rounded-lg bg-emerald-500/20 p-1.5">
+                    <svg className="h-5 w-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <h3 className="text-lg font-bold text-emerald-300">
+                    AI-Tailored Resume
+                  </h3>
+                </div>
+                <p className="text-sm text-slate-300">
+                  Your professionally formatted resume is ready. Download as PDF or view the LaTeX source code below.
                 </p>
               </div>
               {tailoredDownloadUrl && (
                 <a
                   href={tailoredDownloadUrl}
                   download={tailoredFilename || "qfix-tailored-resume.pdf"}
-                  className="inline-flex items-center justify-center rounded-full border border-emerald-500/70 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-200 transition hover:bg-emerald-500/20"
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-emerald-500/50 bg-emerald-500/20 px-5 py-2.5 text-sm font-semibold text-emerald-200 shadow-lg shadow-emerald-500/20 transition-all hover:bg-emerald-500/30 hover:shadow-emerald-500/30"
                 >
-                  Download tailored resume (PDF)
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  Download PDF
                 </a>
               )}
             </div>
             {tailoredDownloadUrl && (
-              <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-2">
+              <div className="rounded-xl border border-slate-800/50 bg-slate-950/60 overflow-hidden">
                 <iframe
                   src={tailoredDownloadUrl}
                   title="Tailored resume PDF preview"
-                  className="h-[600px] w-full rounded-lg"
+                  className="h-[700px] w-full"
                 />
               </div>
             )}
-            <details className="mt-2">
-              <summary className="cursor-pointer text-xs font-medium text-slate-400 hover:text-slate-300">
-                View LaTeX source code
+            <details className="group">
+              <summary className="flex cursor-pointer items-center justify-between rounded-lg border border-slate-800/50 bg-slate-900/40 px-4 py-3 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-800/50 hover:text-slate-200">
+                <span className="flex items-center gap-2">
+                  <svg className="h-4 w-4 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                  View LaTeX Source Code
+                </span>
               </summary>
-              <div className="mt-2 max-h-96 overflow-auto rounded-xl border border-slate-800 bg-slate-950/80 p-3 text-xs font-mono leading-relaxed text-slate-100">
+              <div className="mt-3 max-h-96 overflow-auto rounded-xl border border-slate-800/50 bg-slate-950/80 p-4 text-xs font-mono leading-relaxed text-slate-200">
                 <pre className="whitespace-pre-wrap break-words">
                   {tailoredResumeText}
                 </pre>

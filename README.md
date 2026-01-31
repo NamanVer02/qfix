@@ -2,6 +2,17 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Getting Started
 
+## Authentication (Google)
+
+This app is **locked behind Google sign-in**. Configure environment variables before running locally:
+
+- Copy `env.example` to `.env.local` and fill in values:
+  - `GOOGLE_CLIENT_ID`
+  - `GOOGLE_CLIENT_SECRET`
+  - `NEXTAUTH_SECRET`
+  - `NEXTAUTH_URL`
+  - (existing) `GEMINI_API_KEY`
+
 First, run the development server:
 
 ```bash

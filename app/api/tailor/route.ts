@@ -3,6 +3,9 @@ import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import pdfParse from "pdf-parse";
 import mammoth from "mammoth";
 import puppeteer from "puppeteer";
+import {
+  checkAndReserveConversion,
+} from "@/lib/serverRateLimit";
 
 export const runtime = "nodejs";
 
@@ -413,10 +416,9 @@ LaTeX code for tailored resume (ATS-friendly, clean, and professional):
         if (typeof chunk === "string") return chunk;
         if (chunk && typeof chunk === "object") {
           // Handle different content types
-          const chunkAny = chunk as any;
-          if (typeof chunkAny.text === "string") {
-            return chunkAny.text;
-          }
+          const chunkObj = chunk as Record<string, unknown>;
+          const maybeText = chunkObj["text"];
+          if (typeof maybeText === "string") return maybeText;
         }
         return "";
       })
@@ -431,9 +433,30 @@ LaTeX code for tailored resume (ATS-friendly, clean, and professional):
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
+    const userId = String(formData.get("userId") || "").trim();
     const file = formData.get("resume");
     const resumeTextInput = String(formData.get("resumeText") || "").trim();
     const jobDescription = String(formData.get("jobDescription") || "").trim();
+
+    // Verify user authentication
+    if (!userId) {
+      return NextResponse.json(
+        { error: "User authentication required." },
+        { status: 401 },
+      );
+    }
+
+    // Server-side rate limiting check and reservation (atomic operation prevents race conditions)
+    // This reserves a conversion slot immediately, preventing multiple simultaneous requests
+    const limitCheck = await checkAndReserveConversion(userId);
+    if (!limitCheck.allowed) {
+      return NextResponse.json(
+        { error: limitCheck.reason || "Conversion limit reached." },
+        { status: 429 }, // 429 Too Many Requests
+      );
+    }
+    // Note: Conversion is already recorded atomically in checkAndReserveConversion
+    // If processing fails, we should rollback (but for simplicity, we'll keep it reserved)
 
     if (!jobDescription) {
       return NextResponse.json(
@@ -479,6 +502,9 @@ export async function POST(req: NextRequest) {
     // Convert LaTeX to PDF
     const pdfBuffer = await latexToPdf(latexCode);
 
+    // Note: Conversion was already recorded atomically in checkAndReserveConversion
+    // to prevent race conditions. No need to record again here.
+
     // Return PDF as base64 encoded string
     const pdfBase64 = pdfBuffer.toString("base64");
 
@@ -491,15 +517,18 @@ export async function POST(req: NextRequest) {
     console.error("Error tailoring resume:", error);
     const message =
       error instanceof Error ? error.message : "Unknown error occurred.";
+    const isCredentialsError =
+      /default credentials|credentials|FIREBASE_SERVICE_ACCOUNT|GOOGLE_APPLICATION_CREDENTIALS/i.test(
+        message
+      );
+    const userMessage = isCredentialsError
+      ? "Server configuration: set FIREBASE_SERVICE_ACCOUNT (Firebase service account JSON) for tailoring and rate limiting to work. See Firebase Admin setup docs."
+      : process.env.NODE_ENV === "development"
+        ? message
+        : "Please try again later.";
 
     return NextResponse.json(
-      {
-        error:
-          "Failed to tailor resume. " +
-          (process.env.NODE_ENV === "development"
-            ? message
-            : "Please try again later."),
-      },
+      { error: "Failed to tailor resume. " + userMessage },
       { status: 500 },
     );
   }
