@@ -43,8 +43,16 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The project is set up for Vercel:
 
 1. **Push to GitHub** and import the repo in [Vercel](https://vercel.com/new).
-2. **Environment variables:** In the Vercel project, go to **Settings → Environment Variables** and add all variables from `.env.example` (see above). For `FIREBASE_SERVICE_ACCOUNT`, paste the full JSON in one line or use multiline.
+2. **Environment variables:** In the Vercel project, go to **Settings → Environment Variables** and add all variables from `.env.example` (see above). 
+   - For `FIREBASE_SERVICE_ACCOUNT`: Paste the entire JSON object directly (no quotes around it). Vercel may add quotes automatically—the code handles this, but if you see JSON parsing errors, ensure the JSON is valid and remove any extra surrounding quotes.
 3. **Plan:** The app is configured for the **Hobby** plan (10s max duration, 2048 MB memory). The tailor API uses Chromium for PDF generation; graphics are disabled to reduce memory. For longer timeouts or more memory, use a Pro plan and increase `maxDuration` / `memory` in `vercel.json` and the route.
 4. **Build:** Vercel runs `next build` by default. No extra config needed.
 
 The app uses `@sparticuz/chromium` with `puppeteer-core` on Vercel for serverless PDF generation; locally it uses the full `puppeteer` package.
+
+### Troubleshooting
+
+**"Error parsing FIREBASE_SERVICE_ACCOUNT"**: 
+- Ensure the JSON is valid (test with `JSON.parse()` in a console)
+- In Vercel, paste the JSON directly without wrapping it in quotes
+- The code automatically trims whitespace and removes surrounding quotes, but double-check the JSON structure

@@ -26,7 +26,19 @@ function getAdminFirestore(): Firestore {
     if (serviceAccount) {
       // Parse service account from environment variable (JSON string)
       try {
-        const serviceAccountJson = JSON.parse(serviceAccount) as Record<string, unknown>;
+        // Trim whitespace and remove surrounding quotes if present (common in Vercel env vars)
+        let cleaned = serviceAccount.trim();
+        // Remove surrounding single or double quotes if the entire string is quoted
+        if (
+          (cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+          (cleaned.startsWith("'") && cleaned.endsWith("'"))
+        ) {
+          cleaned = cleaned.slice(1, -1);
+        }
+        // Unescape quotes that might have been escaped
+        cleaned = cleaned.replace(/\\"/g, '"').replace(/\\'/g, "'");
+        
+        const serviceAccountJson = JSON.parse(cleaned) as Record<string, unknown>;
         // Env vars often store private_key with literal \n; cert() needs real newlines
         if (typeof serviceAccountJson.private_key === "string") {
           serviceAccountJson.private_key = serviceAccountJson.private_key.replace(/\\n/g, "\n");
