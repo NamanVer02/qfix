@@ -2,16 +2,14 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Getting Started
 
-## Authentication (Google)
+## Environment variables
 
-This app is **locked behind Google sign-in**. Configure environment variables before running locally:
+This app uses **Google sign-in (Firebase Auth)** and **Firebase Admin** for rate limiting. Configure before running or deploying:
 
-- Copy `env.example` to `.env.local` and fill in values:
-  - `GOOGLE_CLIENT_ID`
-  - `GOOGLE_CLIENT_SECRET`
-  - `NEXTAUTH_SECRET`
-  - `NEXTAUTH_URL`
-  - (existing) `GEMINI_API_KEY`
+- Copy `.env.example` to `.env.local` and fill in:
+  - **Firebase (client):** `NEXT_PUBLIC_FIREBASE_*` from your Firebase project config
+  - **Firebase Admin:** `FIREBASE_SERVICE_ACCOUNT` (full service account JSON string) for server-side rate limiting
+  - **Gemini:** `GEMINI_API_KEY` or `GOOGLE_API_KEY` for the tailor API
 
 First, run the development server:
 
@@ -42,6 +40,11 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 
 ## Deploy on Vercel
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The project is set up for Vercel:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. **Push to GitHub** and import the repo in [Vercel](https://vercel.com/new).
+2. **Environment variables:** In the Vercel project, go to **Settings → Environment Variables** and add all variables from `.env.example` (see above). For `FIREBASE_SERVICE_ACCOUNT`, paste the full JSON in one line or use multiline.
+3. **Plan:** The tailor API uses Chromium for PDF generation and can run up to 60 seconds. The **Hobby** plan limits functions to 10s—if you hit timeouts, either reduce `maxDuration` in `app/api/tailor/route.ts` to `10` or use a **Pro** plan for 60s.
+4. **Build:** Vercel runs `next build` by default. No extra config needed.
+
+The app uses `@sparticuz/chromium` with `puppeteer-core` on Vercel for serverless PDF generation; locally it uses the full `puppeteer` package.

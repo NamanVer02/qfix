@@ -1,15 +1,36 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import chromium from "@sparticuz/chromium";
 import pdfParse from "pdf-parse";
 import mammoth from "mammoth";
-import puppeteer from "puppeteer";
+import puppeteer from "puppeteer-core";
 import {
   checkAndReserveConversion,
 } from "@/lib/serverRateLimit";
 
+const isVercel = process.env.VERCEL === "1";
+
 export const runtime = "nodejs";
+/** Vercel: allow up to 60s for PDF generation (Chromium + LLM). Hobby plan max is 10s; Pro required for 60. */
+export const maxDuration = 60;
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // ~10MB
+
+/** Detect LLM/provider rate limit or quota errors (429, quota exceeded, resource exhausted). */
+function isRateLimitError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+  const code = error && typeof error === "object" && "code" in error ? String((error as { code: unknown }).code) : "";
+  return (
+    code === "429" ||
+    /rate limit|rate_limit|ratelimit|quota|resource exhausted|resource_exhausted|too many requests|429/i.test(lower) ||
+    /quota exceeded|billing|limit exceeded/i.test(lower)
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function extractTextFromFile(file: File): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
@@ -37,6 +58,12 @@ async function extractTextFromFile(file: File): Promise<string> {
   }
 
   throw new Error("Unsupported file type. Please upload a PDF or DOCX file.");
+}
+
+/** Returns the number of pages in a PDF buffer. */
+async function getPdfPageCount(pdfBuffer: Buffer): Promise<number> {
+  const parsed = await pdfParse(pdfBuffer);
+  return (parsed as { numpages?: number }).numpages ?? 0;
 }
 
 function latexToHtml(latexCode: string): string {
@@ -70,7 +97,18 @@ function latexToHtml(latexCode: string): string {
   
   // Replace section
   html = html.replace(/\\section\{([^}]+)\}/g, '<h2 class="section-title">$1</h2>');
-  
+
+  // Replace tabular (e.g. skills table: Category & skills \\)
+  html = html.replace(/\\begin\{tabular\}\{[^}]*\}([\s\S]*?)\\end\{tabular\}/g, (_, content) => {
+    const rows = content.split(/\\\\/).map((r: string) => r.trim()).filter(Boolean);
+    const trs = rows.map((row: string) => {
+      const cells = row.split(/&/).map((c: string) => c.trim());
+      const tds = cells.map((cell: string) => `<td>${cell}</td>`).join('');
+      return `<tr>${tds}</tr>`;
+    }).join('');
+    return `<table class="resume-table">${trs}</table>`;
+  });
+
   // Replace other commands
   html = html.replace(/\\Large\s*/g, '');
   html = html.replace(/\\\\/g, '<br>');
@@ -238,6 +276,21 @@ async function latexToPdf(latexCode: string): Promise<Buffer> {
     [style*="float: right"] {
       float: right;
     }
+    .resume-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 4pt 0;
+      font-size: inherit;
+    }
+    .resume-table td {
+      padding: 2pt 8pt 2pt 0;
+      vertical-align: top;
+    }
+    .resume-table tr td:first-child {
+      font-weight: bold;
+      white-space: nowrap;
+      width: 1%;
+    }
   </style>
 </head>
 <body>
@@ -245,18 +298,25 @@ ${htmlContent}
 </body>
 </html>`;
 
-    // Use puppeteer to convert HTML to PDF
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
+    let browser: Awaited<ReturnType<typeof puppeteer.launch>>;
+    if (isVercel) {
+      const executablePath = await chromium.executablePath();
+      browser = await puppeteer.launch({
+        args: chromium.args,
+        executablePath,
+        headless: true,
+      });
+    } else {
+      const puppeteerFull = await import("puppeteer");
+      browser = (await puppeteerFull.default.launch({
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      })) as unknown as Awaited<ReturnType<typeof puppeteer.launch>>;
+    }
 
     const page = await browser.newPage();
-    
-    // Set content with proper styling
     await page.setContent(html, { waitUntil: "networkidle0" });
-    
-    // Generate PDF
+
     const pdfBuffer = await page.pdf({
       format: "A4",
       margin: {
@@ -279,9 +339,11 @@ ${htmlContent}
 async function getTailoredResume({
   resumeText,
   jobDescription,
+  shortenHint,
 }: {
   resumeText: string;
   jobDescription: string;
+  shortenHint?: string;
 }): Promise<string> {
   const apiKey =
     process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
@@ -295,29 +357,49 @@ async function getTailoredResume({
   const model = new ChatGoogleGenerativeAI({
     model: "gemini-2.5-flash",
     apiKey,
-    temperature: 0.4,
+    temperature: 0.3,
   });
 
   const prompt = `
-You are an expert resume writer specializing in creating ATS-friendly (Applicant Tracking System) resumes that are clean, professional, and optimized for both human recruiters and automated systems.
+You are an expert resume writer creating ATS-friendly, one-page resumes. You THINK before you write: you select only content that is (1) present in the candidate's resume, (2) relevant to the job, and (3) impactful. You never invent or embellish.
+
+NO HALLUCINATION — STRICT RULES:
+- Use ONLY information that appears in the candidate's resume. Do not invent, assume, or add any facts.
+- Do NOT make up: job titles, company names, dates, numbers, metrics, percentages, dollar amounts, technologies, or achievements. If the resume does not state a number or metric, do not add one.
+- You MAY: paraphrase for clarity and concision, reorder bullet points by relevance, choose which roles/achievements to include to fit one page, and use stronger action verbs when the original meaning is preserved.
+- You MAY NOT: add responsibilities or achievements not stated in the resume, inflate numbers, invent tools or projects, or imply experience the candidate did not claim.
+- Contact info (name, email, phone, location, links) must come exactly from the resume. Do not guess or fill in missing contact details with placeholders.
+
+SELECTION AND REASONING:
+- First, identify which roles, achievements, skills, and education from the candidate's resume are most relevant to the job description.
+- Include only content that is both clearly present in the source resume AND relevant/impactful for this job. Omit anything that does not directly support the candidate's fit.
+- For each bullet: base it on a specific achievement or responsibility from the resume. Tighten and sharpen the wording; do not add new claims.
+- Skills: list only skills that appear in the candidate's resume. Order or emphasize those that match the job; do not add skills the candidate did not list.
+- If the resume is sparse, output less content—never pad with invented details.
 
 Your task:
-1. Analyze the candidate's resume and the job description
-2. Intelligently select ONLY the most relevant and impactful achievements that align with the job requirements
-3. Rewrite the resume to be clearly targeted to the job while remaining honest and realistic
-4. Ensure the resume is ATS-friendly and follows professional resume best practices
-5. Create a clean, well-structured, and professional document in LaTeX format
-6. CRITICAL: The resume MUST fit on a single page (A4 size with 0.75in margins)
+1. Analyze the candidate's resume and the job description.
+2. Select only the most relevant, impactful content that is explicitly in the resume.
+3. Rewrite that content into a clean, targeted, one-page LaTeX resume. No new facts.
+4. Ensure the document is ATS-friendly and professional.
+
+RESUME STRUCTURE AND STYLE REFERENCE (follow this layout and formatting):
+- Header: Candidate name (centered, large, bold). Then contact block: phone and location on one line; then email, portfolio, LinkedIn, GitHub each on its own line using \\href{url}{text} for links.
+- Section order: (1) Education, (2) Projects (if the candidate has projects and space permits), (3) Experience, (4) Skills, (5) Certifications/Publications (if relevant).
+- Education: Institution name in \\textbf{}. Degree and date on same line (date right with \\hfill \\textit{Date}). Grades or details on next line. Use reverse chronological order.
+- Projects (optional): For each project use \\textbf{Project Name} and optional \\href{}{Link}. Then \\begin{itemize} with \\item for 2-3 bullets. Use concise, outcome-focused bullets (e.g., "Built...", "Designed...", "Developed...").
+- Experience: For each role: \\textbf{Company Name} \\hfill \\textit{Location}\\\\ then Role title \\hfill Date range\\\\ then \\begin{itemize} with \\item for 3-5 achievement bullets. Put company and location on first line, role and date on second. Use strong action verbs and quantifiable results when present in the resume.
+- Skills: Use a two-column table so categories are clear. Format: \\begin{tabular}{ @{} >{\\bfseries}l @{\\hspace{6ex}} l } Category & Skills\\\\ ... \\end{tabular}. Use categories that fit the candidate (e.g., Languages, Frontend, Backend/Cloud, Database, Developer Tools, Other, Concepts, Soft Skills). Only include skills from the resume; order by relevance to the job.
+- Certifications/Publications: Simple \\begin{itemize} \\item ... with \\href for links when available.
+- Use \\\\ for line breaks and \\hfill for right-aligned dates/locations. Keep bullet lists tight and scannable.
 
 CRITICAL REQUIREMENTS:
-- You MUST return ONLY valid LaTeX code for the resume content (without \\documentclass, \\begin{document}, or \\end{document} - those will be added automatically). The LaTeX code should contain only the resume body content.
-- The resume MUST fit on a single page. Be selective and concise.
-- DO NOT include a Professional Summary section - start directly with Work Experience after the contact information.
-- For each work experience position, include ONLY the 2-4 most relevant and impressive achievements that directly relate to the job description.
-- Prioritize achievements that: (1) are most relevant to the job requirements, (2) are quantifiable (numbers, percentages, dollar amounts), (3) demonstrate impact and results, (4) showcase skills mentioned in the job description.
-- If the candidate has many positions, you may need to include fewer bullet points per position or focus on the most recent/relevant roles.
-- Skills section should list only the most relevant skills for the job (typically 8-12 skills).
-- Education section should be brief - just degree, institution, and date.
+- Return ONLY valid LaTeX code for the resume body (no \\documentclass, \\usepackage, \\begin{document}, or \\end{document}). LaTeX code only.
+- The resume MUST fit on one A4 page with 0.75in margins. Be selective and concise.
+- DO NOT include a Professional Summary section. Use section order: Education, then Projects (if any), then Experience, then Skills, then Certifications.
+- For each position, include 3-5 bullet points that are grounded in the candidate's resume and most relevant to the job (include more content initially, only reduce if space requires).
+- Prioritize achievements that: (1) are stated in the resume, (2) align with job requirements, (3) are quantifiable when the candidate provided numbers, (4) demonstrate impact.
+- Skills: Use a tabular format with category in first column (bold) and skills in second: \\begin{tabular}{ @{} >{\\bfseries}l @{\\hspace{6ex}} l } Languages & ...\\\\ Frontend & ...\\\\ Backend/Cloud & ...\\\\ ... \\end{tabular}. Use categories that fit the candidate (Languages, Frontend, Backend/Cloud, Developer Tools, Other, Concepts, Soft Skills). Only skills from the resume. Education: degree, institution, date from the resume only.
 
 LaTeX Formatting Requirements:
 - Use \\section{Section Name} for main sections: "Contact Information", "Work Experience" or "Professional Experience", "Education", "Skills", "Certifications"
@@ -333,61 +415,79 @@ LaTeX Formatting Requirements:
 
 ATS-Friendly Requirements:
 - Use standard section headings that ATS systems can parse
-- Include relevant keywords from the job description naturally throughout the resume
-- Use standard date formats
-- Include quantifiable achievements where possible (numbers, percentages, dollar amounts)
+- Phrase the candidate's experience so job-relevant terms from the job description appear where they honestly apply to what the candidate did (do not add experience to match keywords)
+- Use standard date formats; use only dates from the resume
+- Keep quantifiable achievements as stated in the resume; do not add or estimate numbers
 - Keep formatting simple and ATS-parseable
 
 Professional Standards:
-- Keep language concise, clear, and action-oriented
-- Use strong action verbs (e.g., "Developed", "Managed", "Implemented", "Led", "Optimized")
-- Focus on achievements and impact rather than just responsibilities
-- Ensure consistency in tense (past tense for previous roles, present tense for current role)
-- Maintain professional tone throughout
+- Use concise, clear, action-oriented language. Base every phrase on the candidate's resume.
+- Prefer strong action verbs (e.g., "Developed", "Managed", "Implemented") when they accurately reflect the candidate's wording
+- Focus on achievements and impact that the candidate actually stated
+- Use past tense for previous roles, present tense for current role
+- Maintain a professional tone; never exaggerate or invent
 
 Structure Guidelines:
-- Start with candidate name (centered, large, bold): \\begin{center}\\textbf{\\Large Name}\\\\Contact Info\\end{center}
-- List Work Experience in reverse chronological order (most recent first) - start immediately after contact information
-  - For each position, include ONLY 2-4 bullet points with the most relevant achievements
-  - Prioritize achievements that match the job description requirements
-  - Focus on quantifiable results and impact
-- Include Education section (brief - degree, institution, date only)
-- Include Skills section (8-12 most relevant skills for the job)
-- Only add Certifications, Awards, or Additional sections if they are highly relevant to the job and space permits
+- Start with candidate name (centered, large, bold), then contact block: phone and location; then email, portfolio, LinkedIn, GitHub on separate lines with \\href for links.
+- Section order: Education first, then Projects (if candidate has projects), then Experience, then Skills, then Certifications.
+- Education: \\textbf{Institution}, degree and date (date right). Include grades if in resume. Reverse chronological order.
+- Projects (optional): \\textbf{Project Name} optional \\href{}{Link}, then bullet list with outcome-focused items.
+- Experience: \\textbf{Company} \\hfill \\textit{Location}\\\\ Role \\hfill Date\\\\ then 3-5 bullet achievements. Reverse chronological order. Preserve important details.
+- Skills: Use tabular with bold category column and skills column (see RESUME STRUCTURE REFERENCE). Categories: Languages, Frontend, Backend/Cloud, Developer Tools, Other, Concepts, Soft Skills as applicable.
+- Certifications/Publications: List with \\href for links when available.
 
 Single-Page Constraint:
 - The entire resume must fit on one A4 page with 0.75in margins
-- If you need to cut content, prioritize: (1) most recent/relevant work experience, (2) achievements that directly match job requirements, (3) skills mentioned in job description
-- Be ruthless in selecting only the best content - quality over quantity
-- Use concise language and avoid redundancy
+- IMPORTANT: Include comprehensive content initially. Only shorten if the PDF exceeds one page after generation.
+- When cutting for space: keep only content that is in the resume and relevant to the job. Drop less relevant items; never add new ones
+- Quality over quantity: include substantial, accurate content rather than being overly brief
+- Use concise language but preserve important details and achievements
 
-Example LaTeX structure:
+Example LaTeX structure (match this style):
 \\begin{center}
-\\textbf{\\Large John Doe}\\\\
-john.doe@email.com | (555) 123-4567 | linkedin.com/in/johndoe | City, State
+\\textbf{\\Large Name}\\\\
+Phone | City, State\\\\
+\\href{mailto:email}{email}\\\\
+\\href{url}{Portfolio}\\\\
+\\href{url}{LinkedIn}\\\\
+\\href{url}{GitHub}
 \\end{center}
 
-\\section{Work Experience}
-\\textbf{Job Title} \\hfill \\textit{Date Range}\\\\
-\\textbf{Company Name} \\hfill \\textit{Location}
+\\section{Education}
+\\textbf{Institution Name}, Degree \\hfill \\textit{Date}\\\\
+Grade or detail line
+
+\\section{Projects}
+\\textbf{Project Name} \\href{url}{Link}
 \\begin{itemize}
-\\item Achievement or responsibility
-\\item Another achievement
+\\item Outcome-focused bullet
 \\end{itemize}
 
-\\section{Education}
-\\textbf{Degree Name} \\hfill \\textit{Date}\\\\
-\\textbf{University Name} \\hfill \\textit{Location}
+\\section{Experience}
+\\textbf{Company Name} \\hfill \\textit{Location}\\\\
+Role Title \\hfill Date Range
+\\begin{itemize}
+\\item Achievement bullet
+\\end{itemize}
 
 \\section{Skills}
-Skill 1, Skill 2, Skill 3, Skill 4
+\\begin{tabular}{ @{} >{\\bfseries}l @{\\hspace{6ex}} l }
+Languages & JavaScript, TypeScript, Python\\\\
+Frontend & React, Next.js, Figma\\\\
+Backend/Cloud & AWS, Supabase, REST API\\\\
+Developer Tools & Git, Docker, CI/CD
+\\end{tabular}
+
+\\section{Certifications and Publications}
+\\begin{itemize}
+\\item Certification name \\href{url}{Link}
+\\end{itemize}
 
 IMPORTANT: Return ONLY the LaTeX code for the resume body content. Do NOT include:
-- \\documentclass
-- \\usepackage commands
-- \\begin{document} or \\end{document}
-- Any explanations or commentary
-- Markdown formatting
+- \\documentclass, \\usepackage, \\begin{document}, or \\end{document}
+- Any explanations, commentary, or markdown
+- Any information not taken from the candidate's resume (no hallucination)
+${shortenHint ? `\nCRITICAL — SHORTEN (previous attempt was more than one page):\n${shortenHint}\n\nIMPORTANT: Even when shortening, maintain the skills categorization structure (Backend, Frontend, etc.) and preserve the most impactful achievements.\n\n` : ""}
 
 Candidate resume:
 -----------------
@@ -401,8 +501,28 @@ LaTeX code for tailored resume (ATS-friendly, clean, and professional):
 ------------------------------------------------------------------------
 `;
 
-  const response = await model.invoke(prompt);
+  const MAX_LLM_RETRIES = 3;
+  const BACKOFF_MS = [2000, 4000]; // 2s, then 4s
 
+  let response: Awaited<ReturnType<typeof model.invoke>> | undefined;
+  for (let attempt = 0; attempt < MAX_LLM_RETRIES; attempt++) {
+    try {
+      response = await model.invoke(prompt);
+      break;
+    } catch (invokeError) {
+      const isLastAttempt = attempt === MAX_LLM_RETRIES - 1;
+      if (isRateLimitError(invokeError) && !isLastAttempt) {
+        const delay = BACKOFF_MS[attempt] ?? BACKOFF_MS[BACKOFF_MS.length - 1];
+        console.warn(`LLM rate limit (attempt ${attempt + 1}/${MAX_LLM_RETRIES}), retrying in ${delay}ms...`, invokeError);
+        await sleep(delay);
+      } else {
+        throw invokeError;
+      }
+    }
+  }
+  if (!response) {
+    throw new Error("LLM did not return a response.");
+  }
   const content = response.content;
 
   if (typeof content === "string") {
@@ -490,17 +610,42 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const latexCode = await getTailoredResume({
+    const MAX_PAGE_ITERATIONS = 3;
+    let latexCode = "";
+    let pdfBuffer: Buffer = Buffer.alloc(0);
+    let shortenHint: string | undefined;
+
+    // First iteration: generate comprehensive resume without shortening
+    latexCode = await getTailoredResume({
       resumeText,
       jobDescription,
+      shortenHint: undefined, // No shortening hint on first attempt
     });
+    pdfBuffer = await latexToPdf(latexCode);
+    let pageCount = await getPdfPageCount(pdfBuffer);
+
+    // Only iterate if PDF exceeds 1 page
+    if (pageCount > 1) {
+      for (let iteration = 1; iteration < MAX_PAGE_ITERATIONS; iteration++) {
+        shortenHint =
+          iteration === 1
+            ? "Your previous output was more than one page. You MUST shorten it: reduce to 2-3 bullet points per role, use more concise phrasing, omit less relevant roles or sections. The resume MUST fit on a single A4 page. Preserve the most important achievements and maintain skills categorization."
+            : "Your output is STILL more than one page. Be more aggressive: at most 2 bullets per role, more concise wording, but still maintain skills categorization. Fit on ONE page only.";
+        
+        latexCode = await getTailoredResume({
+          resumeText,
+          jobDescription,
+          shortenHint,
+        });
+        pdfBuffer = await latexToPdf(latexCode);
+        pageCount = await getPdfPageCount(pdfBuffer);
+        if (pageCount <= 1) break;
+      }
+    }
 
     // Extract name from LaTeX code to generate filename
     const extractedName = extractNameFromLatex(latexCode);
     const filename = generateFilename(extractedName);
-
-    // Convert LaTeX to PDF
-    const pdfBuffer = await latexToPdf(latexCode);
 
     // Note: Conversion was already recorded atomically in checkAndReserveConversion
     // to prevent race conditions. No need to record again here.
@@ -521,15 +666,19 @@ export async function POST(req: NextRequest) {
       /default credentials|credentials|FIREBASE_SERVICE_ACCOUNT|GOOGLE_APPLICATION_CREDENTIALS/i.test(
         message
       );
-    const userMessage = isCredentialsError
-      ? "Server configuration: set FIREBASE_SERVICE_ACCOUNT (Firebase service account JSON) for tailoring and rate limiting to work. See Firebase Admin setup docs."
-      : process.env.NODE_ENV === "development"
-        ? message
-        : "Please try again later.";
+    const isRateLimited = isRateLimitError(error);
+    const userMessage = isRateLimited
+      ? "The resume service is temporarily busy due to high demand. Please try again in a few minutes."
+      : isCredentialsError
+        ? "Server configuration: set FIREBASE_SERVICE_ACCOUNT (Firebase service account JSON) for tailoring and rate limiting to work. See Firebase Admin setup docs."
+        : process.env.NODE_ENV === "development"
+          ? message
+          : "Please try again later.";
+    const status = isRateLimited ? 503 : 500;
 
     return NextResponse.json(
-      { error: "Failed to tailor resume. " + userMessage },
-      { status: 500 },
+      { error: isRateLimited ? userMessage : "Failed to tailor resume. " + userMessage },
+      { status },
     );
   }
 }

@@ -50,6 +50,8 @@ export default function Home() {
     isSpecial: boolean;
   } | null>(null);
   const [checkingLimit, setCheckingLimit] = useState(false);
+  const [showContactPopup, setShowContactPopup] = useState(false);
+  const [latexCopied, setLatexCopied] = useState(false);
 
   useEffect(() => {
     return () => {
@@ -98,6 +100,7 @@ export default function Home() {
       });
       setTailoredFilename(null);
       setError(null);
+      setShowContactPopup(false);
     }
   }, [user]);
 
@@ -220,6 +223,10 @@ export default function Home() {
             remaining: updatedStatus.remaining,
             isSpecial: updatedStatus.isSpecial,
           });
+          // Show contact popup when user just used their daily generation (0 remaining, not special)
+          if (updatedStatus.remaining === 0 && !updatedStatus.isSpecial) {
+            setShowContactPopup(true);
+          }
         });
       }
     } catch (err) {
@@ -237,7 +244,7 @@ export default function Home() {
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-50">
-        <main className="mx-auto flex min-h-screen max-w-3xl flex-col items-center justify-center gap-6 px-6 py-10 text-center">
+        <main className="mx-auto flex min-h-screen max-w-3xl flex-col items-center justify-center gap-6 px-4 py-8 text-center sm:px-6 sm:py-10">
           <div className="relative">
             <div className="h-16 w-16 animate-spin rounded-full border-4 border-slate-700 border-t-emerald-400"></div>
             <div className="absolute inset-0 h-16 w-16 animate-ping rounded-full border-4 border-emerald-400/20"></div>
@@ -257,27 +264,27 @@ export default function Home() {
           <div className="absolute -bottom-40 -left-40 h-80 w-80 rounded-full bg-cyan-500/10 blur-3xl animate-pulse delay-1000"></div>
         </div>
 
-        <main className="relative mx-auto flex min-h-screen max-w-4xl flex-col items-center justify-center gap-8 px-6 py-12 text-center">
+        <main className="relative mx-auto flex min-h-[100dvh] max-w-4xl flex-col items-center justify-center gap-6 px-4 py-8 text-center sm:gap-8 sm:px-6 sm:py-12">
           {/* Logo/Brand */}
           <div className="space-y-4 animate-fade-in">
             <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-xs font-semibold text-emerald-300 shadow-lg shadow-emerald-500/20">
               <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-emerald-400"></span>
               Qfix Resume
             </div>
-            <h1 className="text-5xl font-bold tracking-tight text-slate-50 sm:text-6xl md:text-7xl">
+            <h1 className="text-3xl font-bold tracking-tight text-slate-50 sm:text-5xl md:text-6xl lg:text-7xl">
               Tailor Your Resume
               <span className="block bg-gradient-to-r from-emerald-400 via-cyan-400 to-sky-400 bg-clip-text text-transparent">
                 To Every Job
               </span>
             </h1>
-            <p className="mx-auto max-w-2xl text-lg leading-relaxed text-slate-300 sm:text-xl">
+            <p className="mx-auto max-w-2xl text-base leading-relaxed text-slate-300 sm:text-lg md:text-xl">
               Transform your resume into a perfect match for any job description with AI-powered tailoring. 
               Get ATS-friendly, professional resumes in seconds.
             </p>
           </div>
 
           {/* Features */}
-          <div className="grid w-full max-w-2xl grid-cols-1 gap-4 sm:grid-cols-3 animate-fade-in delay-200">
+          <div className="grid w-full max-w-2xl grid-cols-1 gap-3 px-1 sm:grid-cols-3 sm:gap-4 animate-fade-in delay-200">
             <div className="rounded-xl border border-slate-800/50 bg-slate-900/40 p-4 backdrop-blur-sm">
               <div className="mb-2 text-2xl">⚡</div>
               <div className="text-sm font-semibold text-slate-200">Lightning Fast</div>
@@ -296,11 +303,11 @@ export default function Home() {
           </div>
 
           {/* Sign In Button */}
-          <div className="space-y-4 animate-fade-in delay-300">
+          <div className="space-y-4 animate-fade-in delay-300 w-full max-w-sm">
             <button
               type="button"
               onClick={signInWithGoogle}
-              className="group relative inline-flex items-center justify-center gap-3 overflow-hidden rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-8 py-4 text-base font-semibold text-slate-950 shadow-2xl shadow-emerald-500/30 transition-all duration-300 hover:scale-105 hover:shadow-emerald-500/50 active:scale-95"
+              className="group relative inline-flex min-h-[48px] w-full items-center justify-center gap-3 overflow-hidden rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-6 py-4 text-base font-semibold text-slate-950 shadow-2xl shadow-emerald-500/30 transition-all duration-300 hover:scale-[1.02] hover:shadow-emerald-500/50 active:scale-[0.98] sm:min-h-0 sm:w-auto sm:px-8 sm:hover:scale-105"
             >
               <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
@@ -322,18 +329,64 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-50">
+      {/* Contact popup: shown after user uses their daily generation */}
+      {showContactPopup && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))]" role="dialog" aria-modal="true" aria-labelledby="contact-popup-title">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => setShowContactPopup(false)}
+            aria-label="Close"
+          />
+          <div className="relative max-h-[85dvh] w-full max-w-md overflow-y-auto rounded-2xl border border-slate-700/50 bg-slate-900/95 p-4 shadow-2xl sm:max-h-[90vh] sm:p-6">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 id="contact-popup-title" className="text-lg font-semibold text-slate-100">
+                Daily limit used
+              </h2>
+            <button
+              type="button"
+              onClick={() => setShowContactPopup(false)}
+              className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 touch-manipulation"
+              aria-label="Close"
+            >
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <p className="text-sm text-slate-300">
+              You&apos;ve used your free conversion for today. Need more? Email{" "}
+              <a
+                href="mailto:namanver.2002@gmail.com"
+                className="font-medium text-emerald-400 underline decoration-emerald-500/50 underline-offset-2 hover:text-emerald-300"
+              >
+                namanver.2002@gmail.com
+              </a>{" "}
+              to apply for the unlimited generation tier.
+            </p>
+            <button
+              type="button"
+              onClick={() => setShowContactPopup(false)}
+              className="mt-5 min-h-[48px] w-full touch-manipulation rounded-xl bg-emerald-500/20 px-4 py-3 text-sm font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/30 active:bg-emerald-500/30"
+            >
+              Got it
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Header with user profile */}
-      <header className="sticky top-0 z-50 border-b border-slate-800/50 bg-slate-950/80 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300">
+      <header className="sticky top-0 z-50 border-b border-slate-800/50 bg-slate-950/80 backdrop-blur-xl pt-[env(safe-area-inset-top)]">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2 px-4 py-3 sm:px-6 sm:py-4">
+          <div className="flex min-w-0 shrink items-center gap-2">
+            <div className="inline-flex shrink-0 items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300">
               <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400"></span>
-              Qfix Resume
+              <span className="truncate">Qfix Resume</span>
             </div>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-4">
             {limitStatus && (
-              <div className="hidden items-center gap-2 rounded-lg border border-slate-800/50 bg-slate-900/40 px-3 py-1.5 sm:flex">
+              <div className="flex items-center gap-2 rounded-lg border border-slate-800/50 bg-slate-900/40 px-2.5 py-1.5 min-h-[44px] sm:px-3 sm:min-h-0">
                 {limitStatus.isSpecial ? (
                   <>
                     <svg className="h-4 w-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -347,9 +400,10 @@ export default function Home() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
                     <span className="text-xs font-medium text-slate-300">
-                      {limitStatus.remaining > 0 
+                      <span className="sm:hidden">{limitStatus.remaining > 0 ? `${limitStatus.remaining} left` : "Limit reached"}</span>
+                      <span className="hidden sm:inline">{limitStatus.remaining > 0 
                         ? `${limitStatus.remaining} conversion${limitStatus.remaining === 1 ? '' : 's'} left today`
-                        : "Limit reached"}
+                        : "Limit reached"}</span>
                     </span>
                   </>
                 )}
@@ -375,29 +429,29 @@ export default function Home() {
             <button
               type="button"
               onClick={logout}
-              className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900/50 px-4 py-2 text-xs font-medium text-slate-300 transition-all hover:border-emerald-500/50 hover:bg-slate-800/50 hover:text-emerald-300"
+              className="inline-flex min-h-[44px] min-w-[44px] touch-manipulation items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900/50 px-3 py-2.5 text-xs font-medium text-slate-300 transition-all hover:border-emerald-500/50 hover:bg-slate-800/50 hover:text-emerald-300 active:bg-slate-800 sm:px-4"
             >
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
               </svg>
-              Sign out
+              <span className="hidden sm:inline">Sign out</span>
             </button>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto flex min-h-[calc(100vh-73px)] max-w-7xl flex-col gap-8 px-6 py-8 md:px-10 lg:flex-row lg:items-start lg:gap-12 lg:py-12">
+      <main className="mx-auto flex min-h-[calc(100dvh-65px)] max-w-7xl flex-col gap-6 px-4 py-6 sm:gap-8 sm:px-6 sm:py-8 md:px-10 lg:min-h-[calc(100vh-73px)] lg:flex-row lg:items-start lg:gap-12 lg:py-12">
         {/* Left: Hero / Intro */}
-        <section className="flex flex-1 flex-col gap-8 lg:sticky lg:top-[73px] lg:max-h-[calc(100vh-73px)]">
-          <div className="space-y-6">
-            <div className="space-y-4">
-              <h1 className="text-balance text-4xl font-bold tracking-tight text-slate-50 sm:text-5xl lg:text-6xl">
+        <section className="flex flex-1 flex-col gap-6 sm:gap-8 lg:sticky lg:top-[73px] lg:max-h-[calc(100vh-73px)]">
+          <div className="space-y-4 sm:space-y-6">
+            <div className="space-y-3 sm:space-y-4">
+              <h1 className="text-balance text-3xl font-bold tracking-tight text-slate-50 sm:text-4xl md:text-5xl lg:text-6xl">
                 Tailor your resume
                 <span className="block bg-gradient-to-r from-emerald-400 via-cyan-400 to-sky-400 bg-clip-text text-transparent">
                   to every job description.
                 </span>
               </h1>
-              <p className="max-w-xl text-pretty text-base leading-relaxed text-slate-300 sm:text-lg">
+              <p className="max-w-xl text-pretty text-sm leading-relaxed text-slate-300 sm:text-base md:text-lg">
                 Qfix Resume helps you instantly adapt your resume to match any
                 role. Upload your resume, paste the job description, and get a
                 targeted version ready to send.
@@ -405,7 +459,7 @@ export default function Home() {
             </div>
 
             {/* Quick stats or tips */}
-            <div className="rounded-xl border border-slate-800/50 bg-gradient-to-br from-slate-900/50 to-slate-950/50 p-4 backdrop-blur-sm">
+            <div className="rounded-xl border border-slate-800/50 bg-gradient-to-br from-slate-900/50 to-slate-950/50 p-3 backdrop-blur-sm sm:p-4">
               <div className="flex items-start gap-3">
                 <div className="rounded-lg bg-emerald-500/20 p-2">
                   <svg className="h-5 w-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -424,27 +478,27 @@ export default function Home() {
         </section>
 
         {/* Right: Upload & Job Description */}
-        <section className="flex flex-1 flex-col gap-6 rounded-2xl border border-slate-800/50 bg-gradient-to-br from-slate-900/80 to-slate-950/80 p-6 shadow-2xl shadow-slate-950/80 backdrop-blur-xl md:p-8">
-          <div className="space-y-3">
+        <section className="flex flex-1 flex-col gap-4 rounded-2xl border border-slate-800/50 bg-gradient-to-br from-slate-900/80 to-slate-950/80 p-4 shadow-2xl shadow-slate-950/80 backdrop-blur-xl sm:gap-6 sm:p-6 md:p-8">
+          <div className="space-y-2 sm:space-y-3">
             <div className="flex items-center gap-2">
               <div className="rounded-lg bg-emerald-500/20 p-1.5">
                 <svg className="h-5 w-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                 </svg>
               </div>
-              <h2 className="text-xl font-bold text-slate-50">
+              <h2 className="text-lg font-bold text-slate-50 sm:text-xl">
                 Get Started
               </h2>
             </div>
-            <div className="flex items-center gap-2 text-sm text-slate-400">
-              <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500/20 text-xs font-semibold text-emerald-300">1</span>
-              <span>Upload or paste resume</span>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400 sm:text-sm">
+              <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-500/20 text-xs font-semibold text-emerald-300">1</span>
+              <span>Upload or paste</span>
               <span className="text-slate-600">·</span>
-              <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-slate-800 text-xs font-semibold text-slate-400">2</span>
-              <span>Add job description</span>
+              <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-800 text-xs font-semibold text-slate-400">2</span>
+              <span>Job description</span>
               <span className="text-slate-600">·</span>
-              <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-slate-800 text-xs font-semibold text-slate-400">3</span>
-              <span>Get tailored resume</span>
+              <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-800 text-xs font-semibold text-slate-400">3</span>
+              <span>Get resume</span>
             </div>
           </div>
 
@@ -454,14 +508,14 @@ export default function Home() {
               <label className="text-sm font-medium text-slate-200">
                 Your resume
               </label>
-              <div className="inline-flex items-center gap-1 rounded-lg border border-slate-800/50 bg-slate-950/60 p-1">
+              <div className="inline-flex min-h-[44px] items-center gap-1 rounded-lg border border-slate-800/50 bg-slate-950/60 p-1">
                 <button
                   type="button"
                   onClick={() => {
                     setUsePastedText(false);
                     setPastedResumeText("");
                   }}
-                  className={`text-xs px-3 py-1.5 rounded-md font-medium transition-all ${
+                  className={`min-h-[36px] text-xs px-3 py-2 rounded-md font-medium transition-all touch-manipulation ${
                     !usePastedText
                       ? "bg-emerald-500/20 text-emerald-300 shadow-sm"
                       : "text-slate-400 hover:text-slate-300"
@@ -475,7 +529,7 @@ export default function Home() {
                     setUsePastedText(true);
                     setUploadedResume(null);
                   }}
-                  className={`text-xs px-3 py-1.5 rounded-md font-medium transition-all ${
+                  className={`min-h-[36px] text-xs px-3 py-2 rounded-md font-medium transition-all touch-manipulation ${
                     usePastedText
                       ? "bg-emerald-500/20 text-emerald-300 shadow-sm"
                       : "text-slate-400 hover:text-slate-300"
@@ -527,7 +581,7 @@ export default function Home() {
                   value={pastedResumeText}
                   onChange={(e) => setPastedResumeText(e.target.value)}
                   placeholder="Paste your resume content here. Include all sections: contact information, professional summary, work experience, education, skills, etc."
-                  className="min-h-[200px] w-full resize-none rounded-xl border border-slate-700/50 bg-slate-950/60 px-4 py-3 text-sm text-slate-100 outline-none ring-0 transition-all placeholder:text-slate-500 focus:border-emerald-500/50 focus:bg-slate-950/80 focus:ring-2 focus:ring-emerald-500/20"
+                  className="min-h-[180px] w-full resize-none rounded-xl border border-slate-700/50 bg-slate-950/60 px-4 py-3 text-base text-slate-100 outline-none ring-0 transition-all placeholder:text-slate-500 focus:border-emerald-500/50 focus:bg-slate-950/80 focus:ring-2 focus:ring-emerald-500/20 sm:min-h-[200px] sm:text-sm"
                 />
                 <p className="flex items-center gap-2 text-xs text-slate-400">
                   <svg className="h-4 w-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -555,7 +609,7 @@ export default function Home() {
               value={jobDescription}
               onChange={(e) => setJobDescription(e.target.value)}
               placeholder="Paste the job description here. Qfix Resume will analyze this and tailor your resume accordingly."
-              className="min-h-[150px] w-full resize-none rounded-xl border border-slate-700/50 bg-slate-950/60 px-4 py-3 text-sm text-slate-100 outline-none ring-0 transition-all placeholder:text-slate-500 focus:border-emerald-500/50 focus:bg-slate-950/80 focus:ring-2 focus:ring-emerald-500/20"
+              className="min-h-[140px] w-full resize-none rounded-xl border border-slate-700/50 bg-slate-950/60 px-4 py-3 text-base text-slate-100 outline-none ring-0 transition-all placeholder:text-slate-500 focus:border-emerald-500/50 focus:bg-slate-950/80 focus:ring-2 focus:ring-emerald-500/20 sm:min-h-[150px] sm:text-sm"
             />
             <p className="flex items-start gap-2 text-xs text-slate-400">
               <svg className="h-4 w-4 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -568,7 +622,7 @@ export default function Home() {
           {/* Actions */}
           <div className="mt-4 flex flex-col gap-3 border-t border-slate-800/50 pt-6">
             {limitStatus && !limitStatus.isSpecial && (
-              <div className={`flex items-center justify-between rounded-lg border px-4 py-2.5 ${
+              <div className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2.5 sm:px-4 ${
                 limitStatus.remaining > 0
                   ? "border-emerald-500/30 bg-emerald-500/10"
                   : "border-amber-500/30 bg-amber-500/10"
@@ -601,6 +655,23 @@ export default function Home() {
                 )}
               </div>
             )}
+
+            {/* Contact: apply for unlimited tier */}
+            {limitStatus && !limitStatus.isSpecial && (
+              <div className="rounded-lg border border-slate-700/50 bg-slate-900/40 px-3 py-2.5 sm:px-4 sm:py-3">
+                <p className="text-xs leading-relaxed text-slate-300">
+                  Exceeded your daily limit? Email{" "}
+                  <a
+                    href="mailto:namanver.2002@gmail.com"
+                    className="font-medium text-emerald-400 underline decoration-emerald-500/50 underline-offset-2 hover:text-emerald-300"
+                  >
+                    namanver.2002@gmail.com
+                  </a>{" "}
+                  to apply for the unlimited generation tier.
+                </p>
+              </div>
+            )}
+
             <button
               type="button"
               disabled={
@@ -611,7 +682,7 @@ export default function Home() {
                 (limitStatus !== null && !limitStatus.isSpecial && limitStatus.remaining === 0)
               }
               onClick={handleTailorClick}
-              className="group relative inline-flex items-center justify-center gap-2 overflow-hidden rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-6 py-3.5 text-sm font-semibold text-slate-950 shadow-lg shadow-emerald-500/30 transition-all disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:scale-100 hover:scale-[1.02] hover:shadow-emerald-500/50 active:scale-[0.98]"
+              className="group relative inline-flex min-h-[48px] w-full touch-manipulation items-center justify-center gap-2 overflow-hidden rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-6 py-3.5 text-sm font-semibold text-slate-950 shadow-lg shadow-emerald-500/30 transition-all disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:scale-100 hover:scale-[1.02] hover:shadow-emerald-500/50 active:scale-[0.98] sm:w-auto"
             >
               {isTailoring ? (
                 <>
@@ -632,7 +703,7 @@ export default function Home() {
               <a
                 href={uploadedResume.url}
                 download={uploadedResume.file.name}
-                className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900/50 px-4 py-2.5 text-sm font-medium text-slate-200 transition-all hover:border-emerald-500/50 hover:bg-slate-800/50 hover:text-emerald-300"
+                className="inline-flex min-h-[44px] w-full touch-manipulation items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900/50 px-4 py-3 text-sm font-medium text-slate-200 transition-all hover:border-emerald-500/50 hover:bg-slate-800/50 hover:text-emerald-300 active:bg-slate-800/50 sm:w-auto sm:py-2.5"
               >
                 <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -653,10 +724,10 @@ export default function Home() {
       </main>
 
       {/* Preview section */}
-      <section className="mx-auto flex max-w-7xl flex-col gap-6 px-6 pb-16 md:px-10">
-        <div className="flex items-center justify-between gap-4">
+      <section className="mx-auto flex max-w-7xl flex-col gap-4 px-4 pb-12 sm:gap-6 sm:px-6 sm:pb-16 md:px-10">
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
           <div className="space-y-1">
-            <h2 className="flex items-center gap-2 text-xl font-bold text-slate-100">
+            <h2 className="flex items-center gap-2 text-lg font-bold text-slate-100 sm:text-xl">
               <svg className="h-5 w-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
@@ -673,8 +744,8 @@ export default function Home() {
 
         <div className="overflow-hidden rounded-2xl border border-slate-800/50 bg-gradient-to-br from-slate-900/80 to-slate-950/80 shadow-2xl shadow-slate-950/80 backdrop-blur-xl">
           {usePastedText && pastedResumeText ? (
-            <div className="p-6">
-              <div className="mb-4 flex items-center justify-between">
+            <div className="p-4 sm:p-6">
+              <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="space-y-1">
                   <p className="text-sm font-semibold text-slate-100">Pasted Resume Content</p>
                   <p className="text-xs text-slate-400">
@@ -692,7 +763,7 @@ export default function Home() {
               </div>
             </div>
           ) : uploadedResume ? (
-            <div className="flex flex-col gap-6 p-6 md:flex-row">
+            <div className="flex flex-col gap-4 p-4 sm:gap-6 sm:p-6 md:flex-row">
               <div className="w-full space-y-3 rounded-xl border border-slate-800/50 bg-slate-950/60 p-4 md:max-w-xs">
                 <p className="text-sm font-semibold text-slate-100">File Details</p>
                 <div className="space-y-2 text-xs">
@@ -768,8 +839,8 @@ export default function Home() {
         </div>
 
         {tailoredResumeText && (
-          <div className="mt-6 space-y-4 rounded-2xl border-2 border-emerald-500/30 bg-gradient-to-br from-emerald-950/30 via-slate-950/80 to-slate-950/80 p-6 shadow-2xl shadow-emerald-900/30 backdrop-blur-xl">
-            <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="mt-4 space-y-4 rounded-2xl border-2 border-emerald-500/30 bg-gradient-to-br from-emerald-950/30 via-slate-950/80 to-slate-950/80 p-4 shadow-2xl shadow-emerald-900/30 backdrop-blur-xl sm:mt-6 sm:p-6">
+            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-4">
               <div className="space-y-2">
                 <div className="flex items-center gap-2">
                   <div className="rounded-lg bg-emerald-500/20 p-1.5">
@@ -789,7 +860,7 @@ export default function Home() {
                 <a
                   href={tailoredDownloadUrl}
                   download={tailoredFilename || "qfix-tailored-resume.pdf"}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-emerald-500/50 bg-emerald-500/20 px-5 py-2.5 text-sm font-semibold text-emerald-200 shadow-lg shadow-emerald-500/20 transition-all hover:bg-emerald-500/30 hover:shadow-emerald-500/30"
+                  className="inline-flex min-h-[44px] w-full touch-manipulation items-center justify-center gap-2 rounded-xl border border-emerald-500/50 bg-emerald-500/20 px-5 py-3 text-sm font-semibold text-emerald-200 shadow-lg shadow-emerald-500/20 transition-all hover:bg-emerald-500/30 hover:shadow-emerald-500/30 active:bg-emerald-500/30 sm:w-auto sm:py-2.5"
                 >
                   <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -803,18 +874,47 @@ export default function Home() {
                 <iframe
                   src={tailoredDownloadUrl}
                   title="Tailored resume PDF preview"
-                  className="h-[700px] w-full"
+                  className="h-[55dvh] w-full min-h-[320px] sm:h-[500px] md:h-[600px] lg:h-[700px]"
                 />
               </div>
             )}
             <details className="group">
-              <summary className="flex cursor-pointer items-center justify-between rounded-lg border border-slate-800/50 bg-slate-900/40 px-4 py-3 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-800/50 hover:text-slate-200">
+              <summary className="flex min-h-[44px] cursor-pointer list-none flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800/50 bg-slate-900/40 px-3 py-2.5 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-800/50 hover:text-slate-200 [&::-webkit-details-marker]:hidden sm:gap-3 sm:px-4 sm:py-3">
                 <span className="flex items-center gap-2">
                   <svg className="h-4 w-4 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                   </svg>
                   View LaTeX Source Code
                 </span>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (tailoredResumeText) {
+                      void navigator.clipboard.writeText(tailoredResumeText);
+                      setLatexCopied(true);
+                      setTimeout(() => setLatexCopied(false), 2000);
+                    }
+                  }}
+                  className="flex min-h-[40px] shrink-0 touch-manipulation items-center gap-1.5 rounded-lg border border-slate-700/50 bg-slate-800/50 px-3 py-2 text-xs font-medium text-slate-200 transition-colors hover:border-emerald-500/50 hover:bg-slate-800 hover:text-emerald-300 active:bg-slate-800 sm:py-1.5"
+                >
+                  {latexCopied ? (
+                    <>
+                      <svg className="h-4 w-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                      Copied!
+                    </>
+                  ) : (
+                    <>
+                      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      </svg>
+                      Copy
+                    </>
+                  )}
+                </button>
               </summary>
               <div className="mt-3 max-h-96 overflow-auto rounded-xl border border-slate-800/50 bg-slate-950/80 p-4 text-xs font-mono leading-relaxed text-slate-200">
                 <pre className="whitespace-pre-wrap break-words">
