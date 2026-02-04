@@ -11,8 +11,8 @@ import {
 const isVercel = process.env.VERCEL === "1";
 
 export const runtime = "nodejs";
-/** Vercel: allow up to 60s for PDF generation (Chromium + LLM). Hobby plan max is 10s; Pro required for 60. */
-export const maxDuration = 60;
+/** Vercel: 10s max on Hobby plan. Keep PDF+LLM fast (single page, 1–2 LLM calls). */
+export const maxDuration = 10;
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // ~10MB
 
@@ -300,6 +300,7 @@ ${htmlContent}
 
     let browser: Awaited<ReturnType<typeof puppeteer.launch>>;
     if (isVercel) {
+      (chromium as { setGraphicsMode?: boolean }).setGraphicsMode = false;
       const executablePath = await chromium.executablePath();
       browser = await puppeteer.launch({
         args: chromium.args,
@@ -315,7 +316,7 @@ ${htmlContent}
     }
 
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: "networkidle0" });
+    await page.setContent(html, { waitUntil: "domcontentloaded" });
 
     const pdfBuffer = await page.pdf({
       format: "A4",
