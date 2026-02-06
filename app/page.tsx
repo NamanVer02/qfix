@@ -177,10 +177,37 @@ export default function Home() {
         body: formData,
       });
 
-      const data = await response.json();
+      // Safely parse JSON if available; fall back to text otherwise
+      let data: any = null;
+      let fallbackText: string | null = null;
+      const contentType = response.headers.get("content-type") || "";
+
+      if (contentType.includes("application/json")) {
+        try {
+          data = await response.json();
+        } catch {
+          // If JSON parsing fails, we'll try reading as plain text below
+        }
+      }
+
+      if (!data) {
+        try {
+          fallbackText = await response.text();
+        } catch {
+          fallbackText = null;
+        }
+      }
 
       if (!response.ok) {
-        throw new Error(data.error || "Failed to tailor resume.");
+        const message =
+          (data && typeof data.error === "string" && data.error) ||
+          fallbackText ||
+          "Failed to tailor resume.";
+        throw new Error(message);
+      }
+
+      if (!data) {
+        throw new Error("Unexpected server response from tailor API.");
       }
 
       // Handle PDF download
