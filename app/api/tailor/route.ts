@@ -11,8 +11,8 @@ import {
 const isVercel = process.env.VERCEL === "1";
 
 export const runtime = "nodejs";
-/** Vercel: 10s max on Hobby plan. Keep PDF+LLM fast (single page, 1–2 LLM calls). */
-export const maxDuration = 10;
+/** Vercel: 60s requires Pro plan; Hobby is limited to 10s (causes FUNCTION_INVOCATION_TIMEOUT). */
+export const maxDuration = 60;
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // ~10MB
 
