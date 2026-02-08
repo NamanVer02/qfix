@@ -301,6 +301,8 @@ ${htmlContent}
     let browser: Awaited<ReturnType<typeof puppeteer.launch>>;
     if (isVercel) {
       (chromium as { setGraphicsMode?: boolean }).setGraphicsMode = false;
+      // Use package default bin path (relative to @sparticuz/chromium), not process.cwd(),
+      // so brotli files are found in serverless bundle where the package is actually resolved.
       const executablePath = await chromium.executablePath();
       browser = await puppeteer.launch({
         args: chromium.args,
