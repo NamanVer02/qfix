@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import chromium from "@sparticuz/chromium";
 import pdfParse from "pdf-parse";
 import mammoth from "mammoth";
+import puppeteer from "puppeteer-core";
 import {
   checkAndReserveConversion,
 } from "@/lib/serverRateLimit";
-import { latexToHtml } from "@/lib/latex";
+import { latexToHtml, RESUME_HTML_STYLES } from "@/lib/latex";
+
+const isVercel = process.env.VERCEL === "1";
 
 export const runtime = "nodejs";
 /** Vercel: 60s requires Pro plan; Hobby is limited to 10s (causes FUNCTION_INVOCATION_TIMEOUT). */
@@ -109,6 +113,55 @@ function generateFilename(name: string, fallback: string = "Resume"): string {
   return `${cleanName}_Tailored_Resume.pdf`;
 }
 
+/** Convert LaTeX resume body to PDF using Puppeteer/Chromium (same polished output as before). */
+async function latexToPdf(latexCode: string): Promise<Buffer> {
+  const htmlContent = latexToHtml(latexCode);
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>${RESUME_HTML_STYLES}</style>
+</head>
+<body>
+${htmlContent}
+</body>
+</html>`;
+
+  let browser: Awaited<ReturnType<typeof puppeteer.launch>>;
+  if (isVercel) {
+    (chromium as { setGraphicsMode?: boolean }).setGraphicsMode = false;
+    const executablePath = await chromium.executablePath();
+    browser = await puppeteer.launch({
+      args: chromium.args,
+      executablePath,
+      headless: true,
+    });
+  } else {
+    const puppeteerFull = await import("puppeteer");
+    browser = (await puppeteerFull.default.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    })) as unknown as Awaited<ReturnType<typeof puppeteer.launch>>;
+  }
+
+  const page = await browser.newPage();
+  await page.setContent(html, { waitUntil: "domcontentloaded" });
+
+  const pdfBuffer = await page.pdf({
+    format: "A4",
+    margin: {
+      top: "0.75in",
+      right: "0.75in",
+      bottom: "0.75in",
+      left: "0.75in",
+    },
+    printBackground: true,
+  });
+
+  await browser.close();
+  return Buffer.from(pdfBuffer);
+}
+
 async function getTailoredResume({
   resumeText,
   jobDescription,
@@ -160,8 +213,8 @@ RESUME STRUCTURE AND STYLE REFERENCE (follow this layout and formatting):
 - Header: Candidate name (centered, large, bold). Then contact block: phone and location on one line; then email, portfolio, LinkedIn, GitHub each on its own line using \\href{url}{text} for links.
 - Section order: (1) Education, (2) Projects (if the candidate has projects and space permits), (3) Experience, (4) Skills, (5) Certifications/Publications (if relevant).
 - Education: Institution name in \\textbf{}. Degree and date on same line (date right with \\hfill \\textit{Date}). Grades or details on next line. Use reverse chronological order.
-- Projects (optional): For each project use \\textbf{Project Name} and optional \\href{}{Link}. Then \\begin{itemize} with \\item for 2-3 bullets. Use concise, outcome-focused bullets (e.g., "Built...", "Designed...", "Developed...").
-- Experience: For each role: \\textbf{Company Name} \\hfill \\textit{Location}\\\\ then Role title \\hfill Date range\\\\ then \\begin{itemize} with \\item for 3-5 achievement bullets. Put company and location on first line, role and date on second. Use strong action verbs and quantifiable results when present in the resume.
+- Projects (optional): For each project use \\textbf{Project Name} and optional \\href{}{Link}. Then \\begin{itemize} with \\item for at most 2 bullets, each max 15 words.
+- Experience: For each role: \\textbf{Company Name} \\hfill \\textit{Location}\\\\ then Role title \\hfill Date range\\\\ then \\begin{itemize} with \\item for at most 3 bullets per role, each max 15 words. Put company and location on first line, role and date on second.
 - Skills: Use a two-column table so categories are clear. Format: \\begin{tabular}{ @{} >{\\bfseries}l @{\\hspace{6ex}} l } Category & Skills\\\\ ... \\end{tabular}. Use categories that fit the candidate (e.g., Languages, Frontend, Backend/Cloud, Database, Developer Tools, Other, Concepts, Soft Skills). Only include skills from the resume; order by relevance to the job.
 - Certifications/Publications: Simple \\begin{itemize} \\item ... with \\href for links when available.
 - Use \\\\ for line breaks and \\hfill for right-aligned dates/locations. Keep bullet lists tight and scannable.
@@ -170,9 +223,16 @@ CRITICAL REQUIREMENTS:
 - Return ONLY valid LaTeX code for the resume body (no \\documentclass, \\usepackage, \\begin{document}, or \\end{document}). LaTeX code only.
 - The resume MUST fit on one A4 page with 0.75in margins. Be selective and concise.
 - DO NOT include a Professional Summary section. Use section order: Education, then Projects (if any), then Experience, then Skills, then Certifications.
-- For each position, include 3-5 bullet points that are grounded in the candidate's resume and most relevant to the job (include more content initially, only reduce if space requires).
 - Prioritize achievements that: (1) are stated in the resume, (2) align with job requirements, (3) are quantifiable when the candidate provided numbers, (4) demonstrate impact.
-- Skills: Use a tabular format with category in first column (bold) and skills in second: \\begin{tabular}{ @{} >{\\bfseries}l @{\\hspace{6ex}} l } Languages & ...\\\\ Frontend & ...\\\\ Backend/Cloud & ...\\\\ ... \\end{tabular}. Use categories that fit the candidate (Languages, Frontend, Backend/Cloud, Developer Tools, Other, Concepts, Soft Skills). Only skills from the resume. Education: degree, institution, date from the resume only.
+
+WORD LIMITS (strict — ensures single page in one pass):
+- Each bullet point: maximum 15 words. One line only. Use strong verbs and cut filler.
+- Education grade/detail line: maximum 10 words.
+- Project bullets: maximum 15 words each. At most 2 bullets per project.
+- Experience: at most 3 roles. At most 3 bullets per role, each max 15 words.
+- Skills table: keep category names short; list skills concisely (no long phrases).
+- Certifications: one short line per item (name + optional link).
+- Total resume body: aim for ~250–300 words. If in doubt, cut content.
 
 LaTeX Formatting Requirements:
 - Use \\section{Section Name} for main sections: "Contact Information", "Work Experience" or "Professional Experience", "Education", "Skills", "Certifications"
@@ -205,16 +265,15 @@ Structure Guidelines:
 - Section order: Education first, then Projects (if candidate has projects), then Experience, then Skills, then Certifications.
 - Education: \\textbf{Institution}, degree and date (date right). Include grades if in resume. Reverse chronological order.
 - Projects (optional): \\textbf{Project Name} optional \\href{}{Link}, then bullet list with outcome-focused items.
-- Experience: \\textbf{Company} \\hfill \\textit{Location}\\\\ Role \\hfill Date\\\\ then 3-5 bullet achievements. Reverse chronological order. Preserve important details.
+- Experience: \\textbf{Company} \\hfill \\textit{Location}\\\\ Role \\hfill Date\\\\ then at most 3 bullets per role (15 words each). Reverse chronological order. At most 3 roles.
 - Skills: Use tabular with bold category column and skills column (see RESUME STRUCTURE REFERENCE). Categories: Languages, Frontend, Backend/Cloud, Developer Tools, Other, Concepts, Soft Skills as applicable.
 - Certifications/Publications: List with \\href for links when available.
 
-Single-Page Constraint:
-- The entire resume must fit on one A4 page with 0.75in margins
-- IMPORTANT: Include comprehensive content initially. Only shorten if the PDF exceeds one page after generation.
-- When cutting for space: keep only content that is in the resume and relevant to the job. Drop less relevant items; never add new ones
-- Quality over quantity: include substantial, accurate content rather than being overly brief
-- Use concise language but preserve important details and achievements
+Single-Page Constraint (strict — one iteration only):
+- The entire resume MUST fit on one A4 page with 0.75in margins. No exceptions.
+- Follow the word limits above. When in doubt, use fewer bullets or shorter phrasing.
+- Include only the most relevant content from the resume. Drop less relevant items; never add new ones.
+- Quality over quantity: one impactful bullet beats two weak ones.
 
 Example LaTeX structure (match this style):
 \\begin{center}
@@ -233,14 +292,15 @@ Grade or detail line
 \\section{Projects}
 \\textbf{Project Name} \\href{url}{Link}
 \\begin{itemize}
-\\item Outcome-focused bullet
+\\item Short outcome bullet (max 15 words)
 \\end{itemize}
 
 \\section{Experience}
 \\textbf{Company Name} \\hfill \\textit{Location}\\\\
 Role Title \\hfill Date Range
 \\begin{itemize}
-\\item Achievement bullet
+\\item Concise achievement (max 15 words)
+\\item Second bullet (max 15 words)
 \\end{itemize}
 
 \\section{Skills}
@@ -274,8 +334,8 @@ LaTeX code for tailored resume (ATS-friendly, clean, and professional):
 ------------------------------------------------------------------------
 `;
 
-  const MAX_LLM_RETRIES = 3;
-  const BACKOFF_MS = [2000, 4000]; // 2s, then 4s
+  const MAX_LLM_RETRIES = 2;
+  const BACKOFF_MS = [1000]; // 1s on rate limit (keep time low for Hobby)
 
   let response: Awaited<ReturnType<typeof model.invoke>> | undefined;
   for (let attempt = 0; attempt < MAX_LLM_RETRIES; attempt++) {
@@ -383,20 +443,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Single-pass: generate tailored LaTeX resume body
+    // Single-pass: generate tailored LaTeX, then render to PDF (no multi-iteration to keep time low)
     const latexCode = await getTailoredResume({
       resumeText,
       jobDescription,
     });
 
-    // Extract name from LaTeX code to generate filename
+    const pdfBuffer = await latexToPdf(latexCode);
+
     const extractedName = extractNameFromLatex(latexCode);
     const filename = generateFilename(extractedName);
 
-    // Note: Conversion was already recorded atomically in checkAndReserveConversion
-    // to prevent race conditions. No need to record again here.
-
     return NextResponse.json({
+      tailoredResumePdf: pdfBuffer.toString("base64"),
       tailoredResumeText: latexCode,
       filename,
     });

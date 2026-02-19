@@ -1,8 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "./auth-context";
-import { RESUME_HTML_STYLES, latexToHtml } from "@/lib/latex";
 /** Fetches limit status from server so it matches enforcement (no client Firestore read). */
 async function fetchLimitStatus(userId: string): Promise<{ remaining: number; isSpecial: boolean }> {
   const res = await fetch("/api/rate-limit", {
@@ -39,6 +38,9 @@ export default function Home() {
   const [tailoredResumeText, setTailoredResumeText] = useState<string | null>(
     null,
   );
+  const [tailoredDownloadUrl, setTailoredDownloadUrl] = useState<string | null>(
+    null,
+  );
   const [tailoredFilename, setTailoredFilename] = useState<string | null>(
     null,
   );
@@ -53,11 +55,10 @@ export default function Home() {
 
   useEffect(() => {
     return () => {
-      if (uploadedResume?.url) {
-        URL.revokeObjectURL(uploadedResume.url);
-      }
+      if (uploadedResume?.url) URL.revokeObjectURL(uploadedResume.url);
+      if (tailoredDownloadUrl) URL.revokeObjectURL(tailoredDownloadUrl);
     };
-  }, [uploadedResume]);
+  }, [uploadedResume, tailoredDownloadUrl]);
 
   // Load user limit status from server when user changes (matches enforcement)
   useEffect(() => {
@@ -89,20 +90,15 @@ export default function Home() {
       setUsePastedText(false);
       setJobDescription("");
       setTailoredResumeText(null);
+      setTailoredDownloadUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
       setTailoredFilename(null);
       setError(null);
       setShowContactPopup(false);
     }
   }, [user]);
-
-  const tailoredHtml = useMemo(() => {
-    if (!tailoredResumeText) return null;
-    try {
-      return latexToHtml(tailoredResumeText);
-    } catch {
-      return null;
-    }
-  }, [tailoredResumeText]);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -127,6 +123,10 @@ export default function Home() {
     const url = URL.createObjectURL(file);
     setUploadedResume({ file, url });
     setTailoredResumeText(null);
+    setTailoredDownloadUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
   };
 
   const handleTailorClick = async () => {
@@ -152,6 +152,10 @@ export default function Home() {
     setIsTailoring(true);
     setError(null);
     setTailoredResumeText(null);
+    setTailoredDownloadUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
     setTailoredFilename(null);
 
     try {
@@ -202,6 +206,19 @@ export default function Home() {
         throw new Error("Unexpected server response from tailor API.");
       }
 
+      if (data.tailoredResumePdf) {
+        const pdfBase64 = data.tailoredResumePdf;
+        const byteCharacters = atob(pdfBase64);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const blob = new Blob([byteArray], { type: "application/pdf" });
+        const url = URL.createObjectURL(blob);
+        setTailoredDownloadUrl(url);
+      }
+
       // Store filename if provided
       if (data.filename) {
         setTailoredFilename(data.filename);
@@ -244,33 +261,6 @@ export default function Home() {
 
   const isPdf =
     uploadedResume && uploadedResume.file.type === "application/pdf";
-
-  const handleOpenPrintView = useCallback(() => {
-    if (!tailoredHtml) return;
-    const win = window.open("", "_blank");
-    if (!win) return;
-    const title = tailoredFilename || "qfix-tailored-resume";
-    win.document.write(`<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8" />
-  <title>${title}</title>
-  <style>
-${RESUME_HTML_STYLES}
-  </style>
-</head>
-<body>
-${tailoredHtml}
-<script>
-  window.onload = function () {
-    window.focus();
-    window.print();
-  };
-</script>
-</body>
-</html>`);
-    win.document.close();
-  }, [tailoredHtml, tailoredFilename]);
 
   if (loading) {
     return (
@@ -884,34 +874,29 @@ ${tailoredHtml}
                   </h3>
                 </div>
                 <p className="text-sm text-slate-300">
-                  Your professionally formatted resume is ready. Preview it below and use your browser&apos;s &quot;Save as PDF&quot; option, or view the LaTeX source code.
+                  Your professionally formatted resume is ready. Download as PDF or view the LaTeX source code below.
                 </p>
               </div>
-              {tailoredHtml && (
-                <button
-                  type="button"
-                  onClick={handleOpenPrintView}
+              {tailoredDownloadUrl && (
+                <a
+                  href={tailoredDownloadUrl}
+                  download={tailoredFilename || "qfix-tailored-resume.pdf"}
                   className="inline-flex min-h-[44px] w-full touch-manipulation items-center justify-center gap-2 rounded-xl border border-emerald-500/50 bg-emerald-500/20 px-5 py-3 text-sm font-semibold text-emerald-200 shadow-lg shadow-emerald-500/20 transition-all hover:bg-emerald-500/30 hover:shadow-emerald-500/30 active:bg-emerald-500/30 sm:w-auto sm:py-2.5"
                 >
                   <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                   </svg>
-                  Open printable view / Save as PDF
-                </button>
+                  Download PDF
+                </a>
               )}
             </div>
-            {tailoredHtml && (
+            {tailoredDownloadUrl && (
               <div className="rounded-xl border border-slate-800/50 bg-slate-950/60 overflow-hidden">
-                <div className="h-[55dvh] w-full min-h-[320px] overflow-auto bg-white text-black sm:h-[500px] md:h-[600px] lg:h-[700px]">
-                  <style
-                    // Scoped styles for the preview container
-                    dangerouslySetInnerHTML={{ __html: RESUME_HTML_STYLES }}
-                  />
-                  <div
-                    className="mx-auto max-w-[8.5in] px-8 py-6"
-                    dangerouslySetInnerHTML={{ __html: tailoredHtml }}
-                  />
-                </div>
+                <iframe
+                  src={tailoredDownloadUrl}
+                  title="Tailored resume PDF preview"
+                  className="h-[55dvh] w-full min-h-[320px] sm:h-[500px] md:h-[600px] lg:h-[700px]"
+                />
               </div>
             )}
             <details className="group">

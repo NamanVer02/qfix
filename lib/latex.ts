@@ -72,8 +72,15 @@ export const RESUME_HTML_STYLES = `
 `;
 
 export function latexToHtml(latexCode: string): string {
-  // Convert LaTeX commands to HTML
+  // Normalize and strip common LaTeX boilerplate if the model added it
   let html = latexCode;
+
+  // Remove documentclass / usepackage / begin/end{document} lines completely
+  html = html.replace(/\\documentclass\[.*?\]\{.*?\}[\r\n]*/g, "");
+  html = html.replace(/\\documentclass\{.*?\}[\r\n]*/g, "");
+  html = html.replace(/\\usepackage(\[[^\]]*])?\{[^}]+\}[\r\n]*/g, "");
+  html = html.replace(/\\begin\{document\}[\r\n]*/g, "");
+  html = html.replace(/\\end\{document\}[\r\n]*/g, "");
 
   // Handle nested structures first - process from innermost to outermost
   // Replace href before other replacements
