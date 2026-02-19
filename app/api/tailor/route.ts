@@ -1,14 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
-import chromium from "@sparticuz/chromium";
 import pdfParse from "pdf-parse";
 import mammoth from "mammoth";
-import puppeteer from "puppeteer-core";
 import {
   checkAndReserveConversion,
 } from "@/lib/serverRateLimit";
-
-const isVercel = process.env.VERCEL === "1";
+import { latexToHtml } from "@/lib/latex";
 
 export const runtime = "nodejs";
 /** Vercel: 60s requires Pro plan; Hobby is limited to 10s (causes FUNCTION_INVOCATION_TIMEOUT). */
@@ -58,104 +55,6 @@ async function extractTextFromFile(file: File): Promise<string> {
   }
 
   throw new Error("Unsupported file type. Please upload a PDF or DOCX file.");
-}
-
-/** Returns the number of pages in a PDF buffer. */
-async function getPdfPageCount(pdfBuffer: Buffer): Promise<number> {
-  const parsed = await pdfParse(pdfBuffer);
-  return (parsed as { numpages?: number }).numpages ?? 0;
-}
-
-function latexToHtml(latexCode: string): string {
-  // Convert LaTeX commands to HTML
-  let html = latexCode;
-
-  // Handle nested structures first - process from innermost to outermost
-  // Replace href before other replacements
-  html = html.replace(/\\href\{([^}]+)\}\{([^}]+)\}/g, '<a href="$1">$2</a>');
-  
-  // Replace text formatting (can be nested)
-  let changed = true;
-  while (changed) {
-    const before = html;
-    html = html.replace(/\\textbf\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}/g, '<strong>$1</strong>');
-    html = html.replace(/\\textit\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}/g, '<em>$1</em>');
-    changed = html !== before;
-  }
-  
-  // Replace center environment
-  html = html.replace(/\\begin\{center\}([\s\S]*?)\\end\{center\}/g, (match, content) => {
-    return `<div class="center">${content.trim()}</div>`;
-  });
-  
-  // Replace itemize environment
-  html = html.replace(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/g, (match, content) => {
-    const items = content.split(/\\item\s+/).filter((item: string) => item.trim());
-    const listItems = items.map((item: string) => `<li>${item.trim()}</li>`).join('');
-    return `<ul class="resume-list">${listItems}</ul>`;
-  });
-  
-  // Replace section
-  html = html.replace(/\\section\{([^}]+)\}/g, '<h2 class="section-title">$1</h2>');
-
-  // Replace tabular (e.g. skills table: Category & skills \\)
-  html = html.replace(/\\begin\{tabular\}\{[^}]*\}([\s\S]*?)\\end\{tabular\}/g, (_, content) => {
-    const rows = content.split(/\\\\/).map((r: string) => r.trim()).filter(Boolean);
-    const trs = rows.map((row: string) => {
-      const cells = row.split(/&/).map((c: string) => c.trim());
-      const tds = cells.map((cell: string) => `<td>${cell}</td>`).join('');
-      return `<tr>${tds}</tr>`;
-    }).join('');
-    return `<table class="resume-table">${trs}</table>`;
-  });
-
-  // Replace other commands
-  html = html.replace(/\\Large\s*/g, '');
-  html = html.replace(/\\\\/g, '<br>');
-  html = html.replace(/\\vspace\{([^}]+)\}/g, '<div style="height: $1"></div>');
-  html = html.replace(/\\hfill/g, '<span style="float: right;"></span>');
-  
-  // Replace escaped characters
-  html = html.replace(/\\&/g, '&');
-  html = html.replace(/\\%/g, '%');
-  html = html.replace(/\\#/g, '#');
-  html = html.replace(/\\\$/g, '$');
-  html = html.replace(/\\\{/g, '{');
-  html = html.replace(/\\\}/g, '}');
-  
-  // Clean up extra whitespace
-  html = html.replace(/\n{3,}/g, '\n\n');
-  
-  // Wrap paragraphs
-  const lines = html.split('\n');
-  const wrappedLines: string[] = [];
-  let currentParagraph = '';
-  
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      if (currentParagraph) {
-        wrappedLines.push(`<p>${currentParagraph}</p>`);
-        currentParagraph = '';
-      }
-      wrappedLines.push('');
-    } else if (trimmed.startsWith('<')) {
-      // Already HTML tag
-      if (currentParagraph) {
-        wrappedLines.push(`<p>${currentParagraph}</p>`);
-        currentParagraph = '';
-      }
-      wrappedLines.push(trimmed);
-    } else {
-      currentParagraph += (currentParagraph ? ' ' : '') + trimmed;
-    }
-  }
-  
-  if (currentParagraph) {
-    wrappedLines.push(`<p>${currentParagraph}</p>`);
-  }
-  
-  return wrappedLines.join('\n');
 }
 
 function extractNameFromLatex(latexCode: string): string {
@@ -208,135 +107,6 @@ function generateFilename(name: string, fallback: string = "Resume"): string {
   }
 
   return `${cleanName}_Tailored_Resume.pdf`;
-}
-
-async function latexToPdf(latexCode: string): Promise<Buffer> {
-  try {
-    // Convert LaTeX to HTML
-    const htmlContent = latexToHtml(latexCode);
-
-    // Create a complete HTML document with professional styling
-    const html = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <style>
-    @page {
-      margin: 0.75in;
-      size: A4;
-    }
-    body {
-      font-family: 'Times New Roman', Times, serif;
-      font-size: 11pt;
-      line-height: 1.4;
-      color: #000;
-      max-width: 8.5in;
-      margin: 0 auto;
-      padding: 0;
-    }
-    .center {
-      text-align: center;
-      margin-bottom: 12pt;
-    }
-    .center strong {
-      font-size: 18pt;
-      font-weight: bold;
-    }
-    .section-title {
-      font-size: 14pt;
-      font-weight: bold;
-      color: #000000;
-      margin-top: 12pt;
-      margin-bottom: 6pt;
-      border-bottom: 1px solid #000000;
-      padding-bottom: 2pt;
-    }
-    .resume-list {
-      margin: 4pt 0;
-      padding-left: 20pt;
-      list-style-type: disc;
-    }
-    .resume-list li {
-      margin: 2pt 0;
-      padding-left: 4pt;
-    }
-    p {
-      margin: 4pt 0;
-    }
-    strong {
-      font-weight: bold;
-    }
-    em {
-      font-style: italic;
-    }
-    a {
-      color: #000000;
-      text-decoration: none;
-    }
-    [style*="float: right"] {
-      float: right;
-    }
-    .resume-table {
-      width: 100%;
-      border-collapse: collapse;
-      margin: 4pt 0;
-      font-size: inherit;
-    }
-    .resume-table td {
-      padding: 2pt 8pt 2pt 0;
-      vertical-align: top;
-    }
-    .resume-table tr td:first-child {
-      font-weight: bold;
-      white-space: nowrap;
-      width: 1%;
-    }
-  </style>
-</head>
-<body>
-${htmlContent}
-</body>
-</html>`;
-
-    let browser: Awaited<ReturnType<typeof puppeteer.launch>>;
-    if (isVercel) {
-      (chromium as { setGraphicsMode?: boolean }).setGraphicsMode = false;
-      // Use package default bin path (relative to @sparticuz/chromium), not process.cwd(),
-      // so brotli files are found in serverless bundle where the package is actually resolved.
-      const executablePath = await chromium.executablePath();
-      browser = await puppeteer.launch({
-        args: chromium.args,
-        executablePath,
-        headless: true,
-      });
-    } else {
-      const puppeteerFull = await import("puppeteer");
-      browser = (await puppeteerFull.default.launch({
-        headless: true,
-        args: ["--no-sandbox", "--disable-setuid-sandbox"],
-      })) as unknown as Awaited<ReturnType<typeof puppeteer.launch>>;
-    }
-
-    const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: "domcontentloaded" });
-
-    const pdfBuffer = await page.pdf({
-      format: "A4",
-      margin: {
-        top: "0.75in",
-        right: "0.75in",
-        bottom: "0.75in",
-        left: "0.75in",
-      },
-      printBackground: true,
-    });
-
-    await browser.close();
-    return Buffer.from(pdfBuffer);
-  } catch (error) {
-    console.error("Error converting LaTeX to PDF:", error);
-    throw new Error("Failed to convert LaTeX to PDF. Please ensure LaTeX code is valid.");
-  }
 }
 
 async function getTailoredResume({
@@ -613,38 +383,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const MAX_PAGE_ITERATIONS = 3;
-    let latexCode = "";
-    let pdfBuffer: Buffer = Buffer.alloc(0);
-    let shortenHint: string | undefined;
-
-    // First iteration: generate comprehensive resume without shortening
-    latexCode = await getTailoredResume({
+    // Single-pass: generate tailored LaTeX resume body
+    const latexCode = await getTailoredResume({
       resumeText,
       jobDescription,
-      shortenHint: undefined, // No shortening hint on first attempt
     });
-    pdfBuffer = await latexToPdf(latexCode);
-    let pageCount = await getPdfPageCount(pdfBuffer);
-
-    // Only iterate if PDF exceeds 1 page
-    if (pageCount > 1) {
-      for (let iteration = 1; iteration < MAX_PAGE_ITERATIONS; iteration++) {
-        shortenHint =
-          iteration === 1
-            ? "Your previous output was more than one page. You MUST shorten it: reduce to 2-3 bullet points per role, use more concise phrasing, omit less relevant roles or sections. The resume MUST fit on a single A4 page. Preserve the most important achievements and maintain skills categorization."
-            : "Your output is STILL more than one page. Be more aggressive: at most 2 bullets per role, more concise wording, but still maintain skills categorization. Fit on ONE page only.";
-        
-        latexCode = await getTailoredResume({
-          resumeText,
-          jobDescription,
-          shortenHint,
-        });
-        pdfBuffer = await latexToPdf(latexCode);
-        pageCount = await getPdfPageCount(pdfBuffer);
-        if (pageCount <= 1) break;
-      }
-    }
 
     // Extract name from LaTeX code to generate filename
     const extractedName = extractNameFromLatex(latexCode);
@@ -653,13 +396,9 @@ export async function POST(req: NextRequest) {
     // Note: Conversion was already recorded atomically in checkAndReserveConversion
     // to prevent race conditions. No need to record again here.
 
-    // Return PDF as base64 encoded string
-    const pdfBase64 = pdfBuffer.toString("base64");
-
     return NextResponse.json({
-      tailoredResumePdf: pdfBase64,
-      tailoredResumeText: latexCode, // Also return LaTeX for reference
-      filename: filename, // Return suggested filename
+      tailoredResumeText: latexCode,
+      filename,
     });
   } catch (error) {
     console.error("Error tailoring resume:", error);
