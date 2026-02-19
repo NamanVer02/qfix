@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "./auth-context";
-import { latexToHtml } from "@/lib/latex";
+import { RESUME_HTML_STYLES, latexToHtml } from "@/lib/latex";
 /** Fetches limit status from server so it matches enforcement (no client Firestore read). */
 async function fetchLimitStatus(userId: string): Promise<{ remaining: number; isSpecial: boolean }> {
   const res = await fetch("/api/rate-limit", {
@@ -256,76 +256,7 @@ export default function Home() {
   <meta charset="UTF-8" />
   <title>${title}</title>
   <style>
-    @page {
-      margin: 0.75in;
-      size: A4;
-    }
-    body {
-      font-family: 'Times New Roman', Times, serif;
-      font-size: 11pt;
-      line-height: 1.4;
-      color: #000;
-      max-width: 8.5in;
-      margin: 0 auto;
-      padding: 0;
-    }
-    .center {
-      text-align: center;
-      margin-bottom: 12pt;
-    }
-    .center strong {
-      font-size: 18pt;
-      font-weight: bold;
-    }
-    .section-title {
-      font-size: 14pt;
-      font-weight: bold;
-      color: #000000;
-      margin-top: 12pt;
-      margin-bottom: 6pt;
-      border-bottom: 1px solid #000000;
-      padding-bottom: 2pt;
-    }
-    .resume-list {
-      margin: 4pt 0;
-      padding-left: 20pt;
-      list-style-type: disc;
-    }
-    .resume-list li {
-      margin: 2pt 0;
-      padding-left: 4pt;
-    }
-    p {
-      margin: 4pt 0;
-    }
-    strong {
-      font-weight: bold;
-    }
-    em {
-      font-style: italic;
-    }
-    a {
-      color: #000000;
-      text-decoration: none;
-    }
-    [style*="float: right"] {
-      float: right;
-    }
-    .resume-table {
-      width: 100%;
-      border-collapse: collapse;
-      margin: 4pt 0;
-      font-size: inherit;
-    }
-    .resume-table td {
-      padding: 2pt 8pt 2pt 0;
-      vertical-align: top;
-    }
-    .resume-table tr td:first-child {
-      font-weight: bold;
-      white-space: nowrap;
-      width: 1%;
-    }
+${RESUME_HTML_STYLES}
   </style>
 </head>
 <body>
@@ -972,6 +903,10 @@ ${tailoredHtml}
             {tailoredHtml && (
               <div className="rounded-xl border border-slate-800/50 bg-slate-950/60 overflow-hidden">
                 <div className="h-[55dvh] w-full min-h-[320px] overflow-auto bg-white text-black sm:h-[500px] md:h-[600px] lg:h-[700px]">
+                  <style
+                    // Scoped styles for the preview container
+                    dangerouslySetInnerHTML={{ __html: RESUME_HTML_STYLES }}
+                  />
                   <div
                     className="mx-auto max-w-[8.5in] px-8 py-6"
                     dangerouslySetInnerHTML={{ __html: tailoredHtml }}
