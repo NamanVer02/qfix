@@ -7,7 +7,7 @@ import puppeteer from "puppeteer-core";
 import {
   checkAndReserveConversion,
 } from "@/lib/serverRateLimit";
-import { latexToHtml, RESUME_HTML_STYLES } from "@/lib/latex";
+import { latexToHtml, polishLaTeX, RESUME_HTML_STYLES } from "@/lib/latex";
 
 const isVercel = process.env.VERCEL === "1";
 
@@ -62,8 +62,12 @@ async function extractTextFromFile(file: File): Promise<string> {
 }
 
 function extractNameFromLatex(latexCode: string): string {
-  // Try to extract name from LaTeX code
-  // Look for patterns like \textbf{\Large Name} or \textbf{Name}
+  // Prefer \name{...} (resume.cls format)
+  const nameMatch = latexCode.match(/\\name\{([^}]+)\}/);
+  if (nameMatch?.[1]) {
+    return nameMatch[1].trim().replace(/\s+/g, " ");
+  }
+  // Fallback: \textbf{\Large Name} or \textbf{Name} or center block
   const patterns = [
     /\\textbf\{\\Large\s+([^}]+)\}/,
     /\\textbf\{([^}]+)\}.*?\\\\/,
@@ -114,7 +118,7 @@ function generateFilename(name: string, fallback: string = "Resume"): string {
 }
 
 /** Convert LaTeX resume body to PDF using Puppeteer/Chromium (same polished output as before). */
-async function latexToPdf(latexCode: string): Promise<Buffer> {
+async function latexToPdf(latexCode: string, scale: number = 1): Promise<Buffer> {
   const htmlContent = latexToHtml(latexCode);
   const html = `<!DOCTYPE html>
 <html>
@@ -149,6 +153,7 @@ ${htmlContent}
 
   const pdfBuffer = await page.pdf({
     format: "A4",
+    scale,
     margin: {
       top: "0.75in",
       right: "0.75in",
@@ -160,6 +165,16 @@ ${htmlContent}
 
   await browser.close();
   return Buffer.from(pdfBuffer);
+}
+
+async function getPdfPageCount(pdfBuffer: Buffer): Promise<number> {
+  try {
+    const parsed = await pdfParse(pdfBuffer);
+    return typeof parsed.numpages === "number" ? parsed.numpages : 1;
+  } catch {
+    // If page counting fails, avoid blocking resume generation.
+    return 1;
+  }
 }
 
 async function getTailoredResume({
@@ -183,144 +198,85 @@ async function getTailoredResume({
   const model = new ChatGoogleGenerativeAI({
     model: "gemini-2.5-flash",
     apiKey,
-    temperature: 0.3,
+    temperature: 0.1,
   });
 
   const prompt = `
-You are an expert resume writer creating ATS-friendly, one-page resumes. You THINK before you write: you select only content that is (1) present in the candidate's resume, (2) relevant to the job, and (3) impactful. You never invent or embellish.
+You are an expert resume writer. You output a one-page LaTeX resume body that matches the EXACT format below. Use ONLY information from the candidate's resume; never invent job titles, companies, dates, numbers, or skills. Contact info (name, email, phone, location, links) must come exactly from the resume.
 
-NO HALLUCINATION — STRICT RULES:
-- Use ONLY information that appears in the candidate's resume. Do not invent, assume, or add any facts.
-- Do NOT make up: job titles, company names, dates, numbers, metrics, percentages, dollar amounts, technologies, or achievements. If the resume does not state a number or metric, do not add one.
-- You MAY: paraphrase for clarity and concision, reorder bullet points by relevance, choose which roles/achievements to include to fit one page, and use stronger action verbs when the original meaning is preserved.
-- You MAY NOT: add responsibilities or achievements not stated in the resume, inflate numbers, invent tools or projects, or imply experience the candidate did not claim.
-- Contact info (name, email, phone, location, links) must come exactly from the resume. Do not guess or fill in missing contact details with placeholders.
+EXACT LaTeX BODY FORMAT (resume.cls style — copy this structure):
 
-SELECTION AND REASONING:
-- First, identify which roles, achievements, skills, and education from the candidate's resume are most relevant to the job description.
-- Include only content that is both clearly present in the source resume AND relevant/impactful for this job. Omit anything that does not directly support the candidate's fit.
-- For each bullet: base it on a specific achievement or responsibility from the resume. Tighten and sharpen the wording; do not add new claims.
-- Skills: list only skills that appear in the candidate's resume. Order or emphasize those that match the job; do not add skills the candidate did not list.
-- If the resume is sparse, output less content—never pad with invented details.
+Header (first lines):
+\\name{Candidate Full Name}
+\\address{Phone \\\\ City, Country}
+\\address{\\href{mailto:email}{email} \\\\ 
+\\href{portfolio-url}{Portfolio} \\\\
+\\href{linkedin-url}{LinkedIn} \\\\
+\\href{github-url}{GitHub}} %
 
-Your task:
-1. Analyze the candidate's resume and the job description.
-2. Select only the most relevant, impactful content that is explicitly in the resume.
-3. Rewrite that content into a clean, targeted, one-page LaTeX resume. No new facts.
-4. Ensure the document is ATS-friendly and professional.
+Sections use \\begin{rSection}{Title} ... \\end{rSection}. After \\begin{rSection} put \\footnotesize on the next line. Section order: Experience, Projects, Skills, Education, Certifications and Publications.
+Keep style close to a FAANG simple template: compact spacing, strong section headings, concise one-line bullets.
 
-RESUME STRUCTURE AND STYLE REFERENCE (follow this layout and formatting):
-- Header: Candidate name (centered, large, bold). Then contact block: phone and location on one line; then email, portfolio, LinkedIn, GitHub each on its own line using \\href{url}{text} for links.
-- Section order: (1) Education, (2) Projects (if the candidate has projects and space permits), (3) Experience, (4) Skills, (5) Certifications/Publications (if relevant).
-- Education: Institution name in \\textbf{}. Degree and date on same line (date right with \\hfill \\textit{Date}). Grades or details on next line. Use reverse chronological order.
-- Projects (optional): For each project use \\textbf{Project Name} and optional \\href{}{Link}. Then \\begin{itemize} with \\item for at most 2 bullets, each max 15 words.
-- Experience: For each role: \\textbf{Company Name} \\hfill \\textit{Location}\\\\ then Role title \\hfill Date range\\\\ then \\begin{itemize} with \\item for at most 3 bullets per role, each max 15 words. Put company and location on first line, role and date on second.
-- Skills: Use a two-column table so categories are clear. Format: \\begin{tabular}{ @{} >{\\bfseries}l @{\\hspace{6ex}} l } Category & Skills\\\\ ... \\end{tabular}. Use categories that fit the candidate (e.g., Languages, Frontend, Backend/Cloud, Database, Developer Tools, Other, Concepts, Soft Skills). Only include skills from the resume; order by relevance to the job.
-- Certifications/Publications: Simple \\begin{itemize} \\item ... with \\href for links when available.
-- Use \\\\ for line breaks and \\hfill for right-aligned dates/locations. Keep bullet lists tight and scannable.
+Experience (exact pattern per role):
+\\normalsize \\begin{rSection}{Experience}
+\\footnotesize
 
-CRITICAL REQUIREMENTS:
-- Return ONLY valid LaTeX code for the resume body (no \\documentclass, \\usepackage, \\begin{document}, or \\end{document}). LaTeX code only.
-- The resume MUST fit on one A4 page with 0.75in margins. Be selective and concise.
-- DO NOT include a Professional Summary section. Use section order: Education, then Projects (if any), then Experience, then Skills, then Certifications.
-- Prioritize achievements that: (1) are stated in the resume, (2) align with job requirements, (3) are quantifiable when the candidate provided numbers, (4) demonstrate impact.
+\\textbf{Company Name} 
+\\hfill \\textit{City, State or Country}\\\\
+Role Title \\hfill Month YYYY - Month YYYY
+ \\begin{itemize}
+    \\itemsep -2pt {} 
+    \\item Achievement (max 12 words).
+ \\end{itemize}
+\\end{rSection}
 
-WORD LIMITS (strict — ensures single page in one pass):
-- Each bullet point: maximum 15 words. One line only. Use strong verbs and cut filler.
-- Education grade/detail line: maximum 10 words.
-- Project bullets: maximum 15 words each. At most 2 bullets per project.
-- Experience: at most 3 roles. At most 3 bullets per role, each max 15 words.
-- Skills table: keep category names short; list skills concisely (no long phrases).
-- Certifications: one short line per item (name + optional link).
-- Total resume body: aim for ~250–300 words. If in doubt, cut content.
+Projects (exact pattern):
+\\normalsize \\begin{rSection}{Projects}
+\\vspace{-1.15em}
+\\footnotesize
 
-LaTeX Formatting Requirements:
-- Use \\section{Section Name} for main sections: "Contact Information", "Work Experience" or "Professional Experience", "Education", "Skills", "Certifications"
-- Use \\textbf{text} for bold text (e.g., job titles, company names, degree names)
-- Use \\textit{text} for italic text (e.g., dates, locations)
-- Use \\begin{itemize} and \\end{itemize} with \\item for bullet points
-- Use \\textbf{Name} at the top for the candidate's name (centered, large)
-- Use proper LaTeX escaping: \\& for &, \\% for %, \\# for #, \\$ for $
-- Use \\\\ for line breaks within sections
-- Use \\vspace{2pt} for small vertical spacing when needed
-- Format dates consistently: \\textit{Month YYYY - Present} or \\textit{Month YYYY - Month YYYY}
-- Use \\href{url}{text} for links (email, LinkedIn, websites)
+\\item \\textbf{Project Name} \\href{url}{Link}
+ \\begin{itemize}
+    \\itemsep -2pt {} 
+    \\item Outcome (max 12 words).
+ \\end{itemize}
+\\end{rSection}
 
-ATS-Friendly Requirements:
-- Use standard section headings that ATS systems can parse
-- Phrase the candidate's experience so job-relevant terms from the job description appear where they honestly apply to what the candidate did (do not add experience to match keywords)
-- Use standard date formats; use only dates from the resume
-- Keep quantifiable achievements as stated in the resume; do not add or estimate numbers
-- Keep formatting simple and ATS-parseable
-
-Professional Standards:
-- Use concise, clear, action-oriented language. Base every phrase on the candidate's resume.
-- Prefer strong action verbs (e.g., "Developed", "Managed", "Implemented") when they accurately reflect the candidate's wording
-- Focus on achievements and impact that the candidate actually stated
-- Use past tense for previous roles, present tense for current role
-- Maintain a professional tone; never exaggerate or invent
-
-Structure Guidelines:
-- Start with candidate name (centered, large, bold), then contact block: phone and location; then email, portfolio, LinkedIn, GitHub on separate lines with \\href for links.
-- Section order: Education first, then Projects (if candidate has projects), then Experience, then Skills, then Certifications.
-- Education: \\textbf{Institution}, degree and date (date right). Include grades if in resume. Reverse chronological order.
-- Projects (optional): \\textbf{Project Name} optional \\href{}{Link}, then bullet list with outcome-focused items.
-- Experience: \\textbf{Company} \\hfill \\textit{Location}\\\\ Role \\hfill Date\\\\ then at most 3 bullets per role (15 words each). Reverse chronological order. At most 3 roles.
-- Skills: Use tabular with bold category column and skills column (see RESUME STRUCTURE REFERENCE). Categories: Languages, Frontend, Backend/Cloud, Developer Tools, Other, Concepts, Soft Skills as applicable.
-- Certifications/Publications: List with \\href for links when available.
-
-Single-Page Constraint (strict — one iteration only):
-- The entire resume MUST fit on one A4 page with 0.75in margins. No exceptions.
-- Follow the word limits above. When in doubt, use fewer bullets or shorter phrasing.
-- Include only the most relevant content from the resume. Drop less relevant items; never add new ones.
-- Quality over quantity: one impactful bullet beats two weak ones.
-
-Example LaTeX structure (match this style):
-\\begin{center}
-\\textbf{\\Large Name}\\\\
-Phone | City, State\\\\
-\\href{mailto:email}{email}\\\\
-\\href{url}{Portfolio}\\\\
-\\href{url}{LinkedIn}\\\\
-\\href{url}{GitHub}
-\\end{center}
-
-\\section{Education}
-\\textbf{Institution Name}, Degree \\hfill \\textit{Date}\\\\
-Grade or detail line
-
-\\section{Projects}
-\\textbf{Project Name} \\href{url}{Link}
-\\begin{itemize}
-\\item Short outcome bullet (max 15 words)
-\\end{itemize}
-
-\\section{Experience}
-\\textbf{Company Name} \\hfill \\textit{Location}\\\\
-Role Title \\hfill Date Range
-\\begin{itemize}
-\\item Concise achievement (max 15 words)
-\\item Second bullet (max 15 words)
-\\end{itemize}
-
-\\section{Skills}
+Skills (exact tabular; use \\& for ampersand in text):
+\\normalsize \\begin{rSection}{Skills}
+\\footnotesize
 \\begin{tabular}{ @{} >{\\bfseries}l @{\\hspace{6ex}} l }
-Languages & JavaScript, TypeScript, Python\\\\
-Frontend & React, Next.js, Figma\\\\
-Backend/Cloud & AWS, Supabase, REST API\\\\
-Developer Tools & Git, Docker, CI/CD
+Languages & Java, Python\\\\
+Frontend & React, Next.js\\\\
+Backend & REST API\\\\
 \\end{tabular}
+\\end{rSection}
 
-\\section{Certifications and Publications}
-\\begin{itemize}
-\\item Certification name \\href{url}{Link}
+Education:
+\\normalsize \\begin{rSection}{Education}
+\\footnotesize
+{\\bf Institution Name}, Degree \\hfill {Month YYYY - Month YYYY}\\\\
+CGPA or grade
+\\end{rSection}
+
+Certifications and Publications:
+\\normalsize \\begin{rSection}{Certifications and Publications} 
+\\footnotesize
+\\begin{itemize} 
+    \\item Name \\href{url}{Link}
 \\end{itemize}
+\\end{rSection}
 
-IMPORTANT: Return ONLY the LaTeX code for the resume body content. Do NOT include:
-- \\documentclass, \\usepackage, \\begin{document}, or \\end{document}
-- Any explanations, commentary, or markdown
-- Any information not taken from the candidate's resume (no hallucination)
-${shortenHint ? `\nCRITICAL — SHORTEN (previous attempt was more than one page):\n${shortenHint}\n\nIMPORTANT: Even when shortening, maintain the skills categorization structure (Backend, Frontend, etc.) and preserve the most impactful achievements.\n\n` : ""}
+CRITICAL: Output ONLY raw LaTeX. No \\documentclass, \\usepackage, \\begin{document}, \\end{document}. No markdown, no code fences, no commentary.
+Use \\name{Name} and \\address{...} for header. Use \\begin{rSection}{Title} and \\end{rSection} for every section. Do NOT use \\section{}.
+Every \\begin{itemize} must include on next line: \\itemsep -2pt {} then newline then \\item ...
+In tabular use \\& for ampersand in text. Use \\\\ for row ends. Escape \\& \\% \\# \\$ in body text.
+One A4 page: max 3 experience roles (2 bullets each by default), max 3 projects, max 2 bullets per project.
+Each bullet must be one line and 8-12 words only. Prefer fewer bullets over overflow.
+Section order: Experience, Projects, Skills, Education, Certifications and Publications.
+IMPORTANT: Do NOT include a section heading if there is no real content for it.
+If Certifications/Publications is empty, omit the entire rSection.
+${shortenHint ? `\nSHORTEN: Cut bullets and wording further; keep same structure.\n\n` : ""}
 
 Candidate resume:
 -----------------
@@ -330,8 +286,7 @@ Job description:
 ----------------
 ${jobDescription}
 
-LaTeX code for tailored resume (ATS-friendly, clean, and professional):
-------------------------------------------------------------------------
+Output ONLY the LaTeX resume body (no preamble, no markdown):
 `;
 
   const MAX_LLM_RETRIES = 2;
@@ -443,13 +398,36 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Single-pass: generate tailored LaTeX, then render to PDF (no multi-iteration to keep time low)
-    const latexCode = await getTailoredResume({
-      resumeText,
-      jobDescription,
-    });
+    // Generate resume body, render PDF, and enforce single-page output with one retry.
+    let latexCode = polishLaTeX(
+      await getTailoredResume({
+        resumeText,
+        jobDescription,
+      }),
+    );
+    let pdfBuffer = await latexToPdf(latexCode);
+    let pageCount = await getPdfPageCount(pdfBuffer);
 
-    const pdfBuffer = await latexToPdf(latexCode);
+    if (pageCount > 1) {
+      const shortenHint =
+        `The previous output rendered to ${pageCount} pages. ` +
+        "Shorten aggressively: keep only highest-impact bullets, reduce each bullet to 8-12 words, " +
+        "use at most 2 bullets per role/project, and keep skills concise so final PDF is exactly 1 page.";
+      latexCode = polishLaTeX(
+        await getTailoredResume({
+          resumeText,
+          jobDescription,
+          shortenHint,
+        }),
+      );
+      pdfBuffer = await latexToPdf(latexCode);
+      pageCount = await getPdfPageCount(pdfBuffer);
+    }
+
+    // Final rendering safeguard: gently scale down if content still overflows.
+    if (pageCount > 1) {
+      pdfBuffer = await latexToPdf(latexCode, 0.92);
+    }
 
     const extractedName = extractNameFromLatex(latexCode);
     const filename = generateFilename(extractedName);
